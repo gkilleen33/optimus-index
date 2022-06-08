@@ -6,7 +6,7 @@ program define optimusindex, eclass
   syntax varlist [if] [aweight], treatment(varname) ///
   [cluster(varlist) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
   folds(integer 10) fold_seed(integer) fold_iterations(integer 100) prescreen_cutoff(real 1.2) expshare(real 0.5) cov_shrinkage(real 0.5) ///
-  concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 0)]
+  concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist)]
 
   preserve
 
@@ -15,12 +15,15 @@ program define optimusindex, eclass
     treatment_cells treatment_prob sort_order cell_centile treatment_r_permuted
 
   forvalues f = 1(1)`folds' {
-    tempvar optindex_`f'
+    tempvar optindex_`f' optindex_pos_`f' optindex_neg_`f'
     quietly gen optindex_`f' = .
   }
 
   local varlist: list uniq varlist // Trim any duplicate variables from the list of outcomes
   local vars_in_group = wordcount( "`varlist'" )
+
+  local rw: list unique `rw'
+  local vars_rw = wordcount("`rw'") + 1  // Plus 1 since the optimus index is also included
 
   quietly gen `sort_order' = _n
   if ( "`covariates'" == "" ) {
@@ -48,12 +51,27 @@ program define optimusindex, eclass
   }
 
   mata: b_by_iter = J(`fold_iterations', 1, .)  // Store coefficients for each iteration of folds
-  mata: p_by_iter = J(`fold_iterations', 2, .) // Store p-values for each iteration of folds (record row number in second column to preserve index)
+  if (`onesided') {
+        mata: pos_by_iter = J(`fold_iterations', 1, 0)  // Indicate if positive for each iteration
+  }
+  mata: p_by_iter = J(`fold_iterations', 2, .) // Store unadjusted p-values for each iteration of folds (record row number in second column to preserve index)
   mata: average_weights = J(`vars_in_group', `fold_iterations', 0)  // Will add in average weights across folds
   mata: any_weight = J(1, `fold_iterations', 0)  // Store average number (across folds) of non-zero weights for fold iteration
   mata: nontrivial_weight = J(1, `fold_iterations', 0)  // Store average number of weights > 1/H for fold iteration
 
+  if ("`rw'" != "`'") {
+    mata: p_rw_by_iter = J(`vars_rw', `fold_iterations', .)  // Stores the RW corrected p-value for each variable and iteration if enabled
+  }
+
   forvalues f_iter = 1(1)`fold_iterations' {
+
+    // Note: We store p-values so that RI uses a pivotal statistic
+    mata: p_actual = J(1, `vars_rw', .)  // Store actual (naive) p-values for each variable for RW
+    mata: p_student = J(`ri_iterations', `vars_rw', .)  // This stores the permuted p-values for each variable and each RI run
+
+    if (`onesided') {
+      mata: average_weights_sign = J(`vars_in_group', 2, 0)  // Store average weights for positive/negative folds
+    }
 
     mata: p_by_iter[`f_iter', 2] = `f_iter'  // Record row number
     capture drop `random_clust'
@@ -80,6 +98,8 @@ program define optimusindex, eclass
     quietly reg `treatment' `covariates' [`weight' `exp'] `if' // Residualize the treatment for SUR
     quietly predict `treatment_r' if e(sample), resid
 
+    mata: votes = J( `folds', 1, . ) // Will fill in with 1 for positive and 0 for negative
+		local fold_disagree = 0
       forvalues f = 1(1)`folds' {
         // Estimate coefficients and covariance matrix for optimus
         gen_coeff_and_covar	`varlist' `if' & `fold_var' != `f', treatment_r(`treatment_r') covariates(`covariates') treatment_cluster(`cluster') ///
@@ -106,35 +126,121 @@ program define optimusindex, eclass
         }
 
         mata: negative = ( index_output[1,1] < index_output[1,2] )  // Indicates that negative index yields better power
-        mata: index_selector = index_output[2..rows(index_output),1+negative]  // First row records power, 2nd - nth optimal weights; column 1 for positive and 2 for negative
-        mata: st_view( optindex_`f' = ., ., "`optindex_`f''" )
-        mata: optindex_`f'[.] = Y_`f' * index_selector / colsum( index_selector ) // Generate the optimal index for fold f, normalized by col_sum so that weights sum to 1
-        quietly replace `optindex_`f'' = 0 `if' & ( `fold_var' != `f' )
+        if ( `onesided ') {
+  				mata: votes[`f'] = 1 - negative
+  				mata: index_selector = index_output[2..rows(index_output),.]
+  				local sign_count = 1
+  				foreach sign in pos neg {
+  					mata: st_view( optindex_`sign'_`f' = ., ., "`optindex_`sign'_`f''" )
+  					mata: optindex_`sign'_`f'[.] = Y_`f' * index_selector[.,`sign_count'] / colsum( index_selector[.,`sign_count++'] ) // Generate the optimal index for fold f
+  					quietly replace `optindex_`sign'_`f'' = 0 `if' & ( `fold_var' != `f' )
+  				}
+  			}
+  			else {
+  				mata: index_selector = index_output[2..rows(index_output),1+negative]
+  				mata: st_view( optindex_`f' = ., ., "`optindex_`f''" )
+  				mata: optindex_`f'[.] = Y_`f' * index_selector / colsum( index_selector ) // Generate the optimal index for fold f
+  				quietly replace `optindex_`f'' = 0 `if' & ( `fold_var' != `f' )
+  			}
 
-        mata: weights_sorted = sort( ( depvar_`f', strofreal( index_selector ) ), -2 )
-        mata: st_numscalar( "count_nontrivial_weight", sum( index_selector :> 1 / `vars_in_group' - 10^-5 ) )
+        // Store information about weights (number, number non-trivial, and values)
+        if ( `onesided ') {
+					local sign_count = 1
+					foreach sign in pos neg {
+            mata: average_weights_sign[,`sign_count'] = average_weights_positive[,`sign_count'] + (1/`folds')*index_selector[.,`sign_count'] / colsum( index_selector[.,`sign_count'] )
+						mata: weights_sorted_`sign'_`f' = sort( ( depvar_`f', strofreal( index_selector[.,`sign_count'] ) ), -2 )
+						mata: st_numscalar( "count_nontrivial_weight", sum( index_selector[.,`sign_count'] :> 1 / `vars_in_group' - 10^-5 ) )
+						local index_size_sum_`sign' = count_nontrivial_weight + `index_size_sum_`sign''
+						mata: st_numscalar( "count_any_weight", sum( index_selector[.,`sign_count++'] :> 10^-5 ) )
+						local count_any_weight_`sign'_`f' = count_any_weight
+					}
+				}
+				else {
+					mata: weights_sorted = sort( ( depvar_`f', strofreal( index_selector ) ), -2 )
+					mata: st_numscalar( "count_nontrivial_weight", sum( index_selector :> 1 / `vars_in_group' - 10^-5 ) )
+					local index_size_sum = count_nontrivial_weight + `index_size_sum'
+					mata: st_numscalar( "count_any_weight", sum( index_selector :> 10^-5 ) )
+					local count_any_weight = count_any_weight
+          // Add in the average weights for this fold
+          mata: average_weights[,`f_iter'] = average_weights[,`f_iter'] + (1/`folds')*index_selector / colsum( index_selector )    // Calculate the index on the actual data
+
+				}
+
         mata: nontrivial_weight[1, `f_iter'] = nontrivial_weight[1, `f_iter'] + (1/`folds')*count_nontrivial_weight
-
-        mata: st_numscalar( "count_any_weight", sum( index_selector :> 10^-5 ) )
         mata: any_weight[1, `f_iter'] = any_weight[1, `f_iter'] + (1/`folds')*count_any_weight
-
-        // Add in the average weights for this fold GSK: Verify that weights are in constant order of varlist
-        mata: average_weights[,`f_iter'] = average_weights[,`f_iter'] + (1/`folds')*index_selector / colsum( index_selector )
 
       }
 
     capture drop `optindex_all'
-    quietly egen `optindex_all' = rowmean( `optindex_1'-`optindex_`folds'' ) `if' // Generate optimus across all folds
-    quietly replace `optindex_all' = `optindex_all' * `folds' `if'
+
+    if ( `onesided' ) {
+			mata: st_numscalar( "totalvotes", sum( votes ) )
+			local pct_pos = totalvotes / `folds'
+			if ( `pct_pos' > 0.66 ) {
+				quietly egen `optindex_all' = rowmean( `optindex_pos_1'-`optindex_pos_`folds'' ) `if' // Generate optimus across all folds
+				local vote_outcome = 1
+				local sign "pos"
+        mata: average_weights[,`f_iter'] = average_weights_sign[,1]
+        mata: pos_by_iter[`fold_iter', 1] = 1    // Calculate the index on the actual data
+
+			}
+			else if ( `pct_pos' < 0.33 ) {
+				quietly egen `optindex_all' = rowmean( `optindex_neg_1'-`optindex_neg_`folds'' ) `if' // Generate optimus across all folds
+				local vote_outcome = 2
+				local sign "neg"
+        mata: average_weights[,`f_iter'] = average_weights_sign[,2]
+			}
+			else {
+        dis in red "ERROR: Folds do not agree about index sign. Consider re-running with a two-sided test."
+				error 459
+			}
+		}
+		else {
+			quietly egen `optindex_all' = rowmean( `optindex_1'-`optindex_`folds'' ) `if' // Generate optimus across all folds
+		}
+		quietly replace `optindex_all' = `optindex_all' * `folds' `if'
 
     // Regress optimus on treatment
     quietly reg `optindex_all' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
     mata: b_by_iter[`fold_iter', 1] = _b[`treatment']  // Store the optimus coefficient
+    local t_0 = _b[`treament']/_se[`treatment']
+
+    local rw_index = 2  // index 1 is the optimus which is handled separately
+    foreach y of varlist `rw' {
+      quietly reg `y' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
+      local t_`rw_index' = _b[`treament']/_se[`treatment']
+    }
+
+    if (`onesided') {
+      if ("`sign'" == "pos") {
+        mata: p_actual[1, 1] = 1-normal(`t_0')
+        if ("`rw'" != "`'") {
+          forval rw_index = 2(1)`vars_rw' {
+              mata: p_actual[1, `rw_index'] = 1-normal(`t_`rw_index'')
+          }
+        }
+      }
+      else {
+        mata: p_actual[1, 1] = 1-normal(-`t_0')
+        if ("`rw'" != "`'") {
+          forval rw_index = 2(1)`vars_rw' {
+              mata: p_actual[1, `rw_index'] = 1-normal(-`t_`rw_index'')
+          }
+        }
+      }
+    }
+    else {
+      mata: p_actual[1, 1] = 2*(1-normal(abs(`t_0')))
+      if ("`rw'" != "`'") {
+        forval rw_index = 2(1)`vars_rw' {
+            mata: p_actual[1, `rw_index'] = 2*(1-normal(abs(`t_`rw_index'')))
+        }
+      }
+    }
 
     *********************************************************************************
-    * Now calculate the RI p-value for this fold
+    * Now calculate the RI p-value for this split
     *********************************************************************************
-    mata: beta_greater = J(`ri_iterations', 1, 0)  // Vector to record whether each iteration exceeds the actual optimus coeffient for RI
 
     for ri = 1(1)`ri_iterations' {
 
@@ -172,6 +278,8 @@ program define optimusindex, eclass
       drop `eligible' `rank' `max' `cell_centile'
 
       // Now calculate the optimus matrix coefficient on the permuted treatment assignment
+      mata: votes = J( `folds', 1, . ) // Will fill in with 1 for positive and 0 for negative
+  		local fold_disagree = 0
       forvalues f = 1(1)`folds' {
         // Estimate coefficients and covariance matrix for optimus
         gen_coeff_and_covar	`varlist' `if' & `fold_var' != `f', treatment_r(`treatment_r_permuted') covariates(`covariates') treatment_cluster(`cluster') ///
@@ -197,37 +305,96 @@ program define optimusindex, eclass
           }
         }
 
-        mata: negative = ( index_output[1,1] < index_output[1,2] )  // Indicates that negative index yields better power
-        mata: index_selector = index_output[2..rows(index_output),1+negative]  // First row records power, 2nd - nth optimal weights; column 1 for positive and 2 for negative
-        mata: st_view( optindex_`f' = ., ., "`optindex_`f''" )
-        mata: optindex_`f'[.] = Y_`f' * index_selector / colsum( index_selector ) // Generate the optimal index for fold f, normalized by col_sum so that weights sum to 1
-        quietly replace `optindex_`f'' = 0 `if' & ( `fold_var' != `f' )
+        mata: negative = ( index_output[1,1] < index_output[1,2] )
+  			if ( `onesided ') {
+  				mata: votes[`f'] = 1 - negative
+  				mata: index_selector = index_output[2..rows(index_output),.]
+  				local sign_count = 1
+  				foreach sign in pos neg {
+  					mata: st_view( optindex_`sign'_`f' = ., ., "`optindex_`sign'_`f''" )
+  					mata: optindex_`sign'_`f'[.] = Y_`f' * index_selector[.,`sign_count'] / colsum( index_selector[.,`sign_count++'] ) // Generate the optimal index for fold f
+  					quietly replace `optindex_`sign'_`f'' = 0 `if' & ( `fold_var' != `f' )
+  				}
+  			}
+  			else {
+  				mata: index_selector = index_output[2..rows(index_output),1+negative]
+  				mata: st_view( optindex_`f' = ., ., "`optindex_`f''" )
+  				mata: optindex_`f'[.] = Y_`f' * index_selector / colsum( index_selector ) // Generate the optimal index for fold f
+  				quietly replace `optindex_`f'' = 0 `if' & ( `fold_var' != `f' )
+  			}
 
       }
 
-    capture drop `optindex_all'
-    quietly egen `optindex_all' = rowmean( `optindex_1'-`optindex_`folds'' ) `if' // Generate optimus across all folds
-    quietly replace `optindex_all' = `optindex_all' * `folds' `if'
-
-    // Regress optimus on treatment
-    quietly reg `optindex_all' `treatment_bs' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
-
-    // One-sided test  GSK: This assumes beta >= 0, should this just be documented in help or should I allow for negative effects?
-    if `onesided' {
-      if _b[`treatment_bs'] > b_by_iter[`fold_iter', 1] {
-        mata: beta_greater[`ri', 1] = 1  // Record that the effect is larger
+      capture drop `optindex_all'
+      if ( `onesided' ) {
+  			mata: st_numscalar( "totalvotes", sum( votes ) )
+  			local pct_pos = totalvotes / `folds'
+  			if ( `pct_pos' > 0.66 ) {
+  				quietly egen `optindex_all' = rowmean( `optindex_pos_1'-`optindex_pos_`folds'' ) `if' // Generate optimus across all folds
+  				local vote_outcome = 1
+  				local sign "pos"
+  			}
+  			else if ( `pct_pos' < 0.33 ) {
+  				quietly egen `optindex_all' = rowmean( `optindex_neg_1'-`optindex_neg_`folds'' ) `if' // Generate optimus across all folds
+  				local vote_outcome = 2
+  				local sign "neg"
+  			}
+  			else {
+  				local fold_disagree = 1
+  				local vote_outcome = 0
+  				quietly gen `optindex_all' = runiform() `if'
+  			}
       }
-    }
-    else{  // Two-sided hypothesis test
-      if abs(_b[`treatment_bs']) > abs(b_by_iter[`fold_iter', 1]) {
-        mata: beta_greater[`ri', 1] = 1  // Record that the effect is larger
+      else {
+  			quietly egen `optindex_all' = rowmean( `optindex_1'-`optindex_`folds'' ) `if' // Generate optimus across all folds
+  		}
+      quietly replace `optindex_all' = `optindex_all' * `folds' `if'
+
+      // Regress optimus on treatment
+      quietly reg `optindex_all' `treatment_bs' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
+      local t_0 = _b[`treatment_bs']/_se[`treatment_bs']
+
+      if (`onesided') {
+        if ("`sign'" == "pos") {
+          mata: p_student[`ri', 1] = 1-normal(`t_0')
+          if ("`rw'" != "`'") {
+            forval rw_index = 2(1)`vars_rw' {
+                mata: p_student[`ri', `rw_index'] = 1-normal(`t_`rw_index'')
+            }
+          }
+        }
+        else {
+          mata: p_student[`ri', 1] = 1-normal(-`t_0')
+          if ("`rw'" != "`'") {
+            forval rw_index = 2(1)`vars_rw' {
+                mata: p_student[`ri', `rw_index'] = 1-normal(-`t_`rw_index'')
+            }
+          }
+        }
       }
+      else {
+        mata: p_student[`ri', 1] = 2*(1-normal(abs(`t_0')))
+        if ("`rw'" != "`'") {
+          forval rw_index = 2(1)`vars_rw' {
+              mata: p_student[`ri', `rw_index'] = 2*(1-normal(abs(`t_`rw_index'')))
+          }
+        }
+      }
+
     }
+    // The unadjusted (for multiple hypothesis testing) p-value of the optimus index is just the share of the time p_actual > p_student (permuted)
+    // This already accounts for 1 or 2-sided tests based on how p_actual and p_student are calculated
+    mata: p_greater = p_actual[1, 1] :> p_student[ , 1]
+    mata: p_by_iter[`fold_iter', 1] = mean(p_greater)  // Fraction of time actual p-value of optimus index exceeds null
+
+    // Calculate the Romano-Wolf vector of p-values for this split, if relevant
+    if ("`rw'" != "") {
+      mata: temp = stepdown(p_actual, p_student)  // The second row has the RW p-values
+      mata: p_rw_by_iter[ , `fold_iter'] = temp[2, ]'
     }
-    mata: p_by_iter[`fold_iter', 1] = mean(beta_greater)  // The RI p-value is just the share of the time the permuted coefficient exceeds the actual coefficient
   }
 
-  // Now calculate the return values
+  // Now generate statistics to return
   mata: p_w_index = matrix_median(p_by_iter)
   mata: p = p_w_index[1, 1]
   // Record the index (or indices) of the CV draw associated with the median p value
@@ -701,6 +868,32 @@ function matrix_median(real matrix mat)
     med_index = (ceil(tmp))
   }
   return (med, med_index)
+}
+
+// Function to calculate Romano-Wolf p-values from actual and permuted p-values calculated via RI
+// Output is a 2 x H matrix sorted in original order with RW p-vals in second row
+function stepdown(real matrix p_actual, real matrix p_student)
+{
+	// Organize the permuted statistics
+	p_total = ( range( 1, cols( b ), 1 )' \ p_actual \ p_student )
+	p_sort = sort( p_total', 2 )' // (2 + rw_reps) x H sorted matrix with original order as first row, actual p-val as second
+	endrow = rows( p_sort )
+	endcol = cols( p_sort )
+	p_actual = p_sort[2, .] // Resorted vector of actual p-vals
+	// Get the min p-val for each rep, with stepdown below
+	p_min = rowmin( p_sort[| 3, 1 \ endrow, endcol |] ) // Syntax note: can't have space between a bracket and a pipe!
+	for ( h = 2; h <= endcol; h++ ) {
+		p_min = ( p_min, rowmin( p_sort[| 3, h \ endrow, endcol |] ) )
+	}
+	p_greater = p_actual :> p_min // Mark cases in which actual p-val exceeds null permuted p-val
+	rw_pval = colsum( p_greater ) / rows( p_greater ) // Compute fraction of times actual p-val exceeds null permuted p-val
+	results = ( p_sort[| 1, 1 \ 1, endcol |] \ rw_pval ) // 2 x H matrix with original order in first row and RW p-vals in second row
+	// Enforce monotonicity
+	for ( h = 2; h <= endcol; h++ ) {
+		results[2, h] = rowmax( results[2, h-1..h] )
+	}
+	results = sort( results', 1 )' // 2 x H matrix sorted in original order with RW p-vals in second row
+	return( results )
 }
 
 end
