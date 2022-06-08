@@ -407,8 +407,34 @@ program define optimusindex, eclass
     local med_indices = 1
     local med_index = p_w_index[1, 2]
   }
+  // Now extract the RW p-values associated with the median unadjusted p-value split
+  if ("`rw'" != "") {
+    if (`med_indices' == 1) {
+      mata: p_rw = p_rw_by_iter[, `med_index']'
+    }
+    else {
+      mata: p_rw = 0.5*p_rw_by_iter[, `med_index_1']' + 0.5*p_rw_by_iter[, `med_index_2']'
+    }
+  }
+
+  // Chernozukhov et al. (2018) and Romano and DiCiccio (2019) bound on p-value across multiple fold iterations if no seed specified
   if ("`fold_seed'" == "") {
-    mata: p = 2*p // Chernozukhov et al. (2018) and Romano and DiCiccio (2019) bound on p-value across multiple fold iterations
+    mata: p = 2*p
+    if ("`rw'" != "") {
+      mata: p_rw = 2*p_rw
+    }
+  }
+
+  // Diplay version of RW p-values
+  if ("`rw'" != "") {
+    mata: p_rw_rounded = round(p_rw, 0.01)
+    mata: p_rw_display = J(2, `vars_rw', "")
+    local full_rw_names = "optimus `rw'"
+    tokenize "`full_rw_names'"
+    forval rw_index = 1(1)`vars_rw' {
+      mata: p_rw_display[1, `rw_index'] = "`rw_index'"
+      mata: p_rw_display[2, `rw_index'] = p_rw_display[1, `rw_index']
+    }
   }
 
   if (`med_indices' == 1) {
@@ -416,15 +442,24 @@ program define optimusindex, eclass
     mata: median_weights = average_weights[,`med_index']
     mata: median_any_weight = any_weight[`med_index', 1]
     mata: median_nontrivial_weight = nontrivial_weight[`med_index', 1]
+    if (`onsided') {
+      mata: median_pos = pos_by_iter[`med_index', 1]
+    }
   }
   else {
     mata: median_b = 0.5*b_by_iter[`med_index_1', 1] + 0.5*b_by_iter[`med_index_2', 1]
     mata: median_weights = 0.5*average_weights[,`med_index_1'] + 0.5*average_weights[,`med_index_2']
     mata: median_any_weight = 0.5*any_weight[`med_index_1', 1] + 0.5*any_weight[`med_index_2', 1]
     mata: median_nontrivial_weight = 0.5*nontrivial_weight[`med_index_1', 1] + 0.5*nontrivial_weight[`med_index_2', 1]
+    if (`onsided') {
+      mata: median_pos = 0.5*pos_by_iter[`med_index_1', 1] + 0.5*pos_by_iter[`med_index_2', 1]
+    }
   }
 
   mata: mean_b = mean(b_by_iter)
+  if (`onsided') {
+    mata: mean_pos = mean(pos_by_iter)
+  }
   mata: mean_weights = mean(average_weights)
   mata: mean_any_weight = mean(any_weight)
   mata: median_nontrivial_weight = mean(nontrivial_weight)
@@ -433,6 +468,11 @@ program define optimusindex, eclass
 
   mata: st_numscalar("e(p)", p)
   mata: st_numscalar("e(b)", median_b)
+  if (`onsided') {
+      mata: st_numscalar("e(pos)", median_pos)
+      mata: st_numscalar("e(mean_pos)", mean_pos)
+      mata: st_matrix("e(pos_by_split)", pos_by_iter)
+  }
   mata: st_numscalar("e(any_weight)", median_any_weight)
   mata: st_numscalar("e(nontrivial_weight)", median_nontrivial_weight)
   mata: st_numscalar("e(mean_b)", mean_b)
@@ -447,6 +487,30 @@ program define optimusindex, eclass
   mata: st_matrix("e(weights_by_split)", weights_by_iter)
   mata: st_matrix("e(any_weight_by_split)", any_weight)
   mata: st_matrix("e(nontrivial_weight_by_split)", nontrivial_weight)
+
+  if ("`rw'" != "") {
+    mata: st_matrix("e(p_rw)", p_rw)
+    dis "Index coefficient: `e(b)'"
+    if (`onesided') {
+      dis "Index positive: `e(pos)'"
+    }
+    dis "Index unadjusted p-value: `e(p)'"
+    dis "Romano-Wolf adjusted p-values"
+    mata: p_rw_display
+    dis "Average number of weights > 1/H across folds: `e(nontrivial_weight)'"
+    dis "Average weights"
+    mata: median_weights 
+  }
+  else {
+    dis "Index coefficient: `e(b)'"
+    if (`onesided') {
+      dis "Index positive: `e(pos)'"
+    }
+    dis "Index p-value: `e(p)'"
+    dis "Average number of weights > 1/H across folds: `e(nontrivial_weight)'"
+    dis "Average weights"
+    mata: median_weights
+  }
 
 end
 
