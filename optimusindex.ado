@@ -55,6 +55,8 @@ program define optimusindex, eclass
   forvalues f = 1(1)`folds' {
     tempvar optindex_`f' optindex_pos_`f' optindex_neg_`f'
     quietly gen `optindex_`f'' = .
+    quietly gen `optindex_pos_`f'' = .
+    quietly gen `optindex_neg_`f'' = .
   }
 
   local varlist: list uniq varlist // Trim any duplicate variables from the list of outcomes
@@ -133,7 +135,7 @@ program define optimusindex, eclass
 
     mata: p_by_iter[`f_iter', 2] = `f_iter'  // Record row number
     capture drop `random_clust'
-    cluster_random_number `cluster', output_var(`random_clust')
+    cluster_random_number `treatment_cluster', output_var(`random_clust')
 
     // Stratify folds on treatment assignment and strata used for randomization GSK: Added stratification on randomization strata. Is this correct?
     if ("`stratify'" != "") {
@@ -148,6 +150,7 @@ program define optimusindex, eclass
 
     local end_cent = `folds' + 1
     quietly summarize `strata_grp', meanonly
+
     forval st_nm = 1/`r(max)' {
         quietly centile `random_clust' if `strata_grp' == `st_nm', centile( 0(`step')100 )
         forvalues f = 1(1)`folds' {
@@ -168,15 +171,17 @@ program define optimusindex, eclass
 
     mata: votes = J( `folds', 1, . ) // Will fill in with 1 for positive and 0 for negative
 		local fold_disagree = 0
+    local index_size_sum = 0
+  	local index_size_sum_pos = 0
+  	local index_size_sum_neg = 0
+    local any_weight_sum_pos = 0
+    local any_weight_sum_neg = 0
+    local any_weight_sum = 0
     forvalues f = 1(1)`folds' {
       // Estimate coefficients and covariance matrix for optimus
       gen_coeff_and_covar	`varlist' `if' & `fold' != `f', treatment_r(`treatment_r') covariates(`covariates') treatment_cluster(`treatment_cluster') ///
         rdraw(`rdraw') all_covariates(`all_covariates') fv(`f') prescreen_cutoff(`prescreen_cutoff') bootstrap_cov(`bootstrap_cov') ///
-        cov_bootstrapreps(`cov_bootstrapreps')
-
-      mata: beta
-      mata: cov_V
-      dis in red "`varlist'"
+        cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors')
 
       // Get the optimal index
       capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
@@ -219,12 +224,22 @@ program define optimusindex, eclass
       if ( `onesided ') {
 				local sign_count = 1
 				foreach sign in pos neg {
-          mata: average_weights_sign[,`sign_count'] = average_weights_positive[,`sign_count'] + (1/`folds')*index_selector[.,`sign_count'] / colsum( index_selector[.,`sign_count'] )
+          // Fill weight with 0 if failed prescreen cutoff (since then it is excluded)
+          mata: normalized_weights = index_selector[.,`sign_count'] / colsum( index_selector[.,`sign_count'] )
+          local j = 1
+          forval i = 1(1)`vars_in_group' {
+            mata: st_numscalar("var_included", included_vars[`i'])
+            local var_included = var_included
+            if (`var_included') {
+              mata: average_weights_sign[`i',`sign_count'] = average_weights_sign[`i',`sign_count'] + (1/`folds')*normalized_weights[`j']
+              local j = `j' + 1
+            }
+          }
 					mata: weights_sorted_`sign'_`f' = sort( ( depvar_`f', strofreal( index_selector[.,`sign_count'] ) ), -2 )
 					mata: st_numscalar( "count_nontrivial_weight", sum( index_selector[.,`sign_count'] :> 1 / `vars_in_group' - 10^-5 ) )
 					local index_size_sum_`sign' = count_nontrivial_weight + `index_size_sum_`sign''
 					mata: st_numscalar( "count_any_weight", sum( index_selector[.,`sign_count++'] :> 10^-5 ) )
-					local count_any_weight_`sign'_`f' = count_any_weight
+					local any_weight_sum_`sign' = count_any_weight + `any_weight_sum_`sign''
 				}
 			}
 			else {
@@ -232,14 +247,21 @@ program define optimusindex, eclass
 				mata: st_numscalar( "count_nontrivial_weight", sum( index_selector :> 1 / `vars_in_group' - 10^-5 ) )
 				local index_size_sum = count_nontrivial_weight + `index_size_sum'
 				mata: st_numscalar( "count_any_weight", sum( index_selector :> 10^-5 ) )
-				local count_any_weight = count_any_weight
+				local any_weight_sum = count_any_weight + `any_weight_sum'
         // Add in the average weights for this fold
-        mata: average_weights[,`f_iter'] = average_weights[,`f_iter'] + (1/`folds')*index_selector / colsum( index_selector )    // Calculate the index on the actual data
+        // Fill weight with 0 if failed prescreen cutoff (since then it is excluded)
+        mata: normalized_weights = index_selector / colsum( index_selector )
+        local j = 1
+        forval i = 1(1)`vars_in_group' {
+          mata: st_numscalar("var_included", included_vars[`i'])
+          local var_included = var_included
+          if (`var_included') {
+            mata: average_weights[`i',1] = average_weights[`i',1] + (1/`folds')*normalized_weights[`j']
+            local j = `j' + 1
+          }
+        }
 
 			}
-
-      mata: nontrivial_weight[1, `f_iter'] = nontrivial_weight[1, `f_iter'] + (1/`folds')*count_nontrivial_weight
-      mata: any_weight[1, `f_iter'] = any_weight[1, `f_iter'] + (1/`folds')*count_any_weight
 
     }
 
@@ -254,6 +276,8 @@ program define optimusindex, eclass
 				local sign "pos"
         mata: average_weights[,`f_iter'] = average_weights_sign[,1]
         mata: pos_by_iter[`fold_iter', 1] = 1    // Calculate the index on the actual data
+        mata: nontrivial_weight[1, `f_iter'] = (1/`folds')*`index_size_sum_pos'
+        mata: any_weight[1, `f_iter'] = (1/`folds')*`any_weight_sum_pos'
 
 			}
 			else if ( `pct_pos' < 0.33 ) {
@@ -261,6 +285,8 @@ program define optimusindex, eclass
 				local vote_outcome = 2
 				local sign "neg"
         mata: average_weights[,`f_iter'] = average_weights_sign[,2]
+        mata: nontrivial_weight[1, `f_iter'] = (1/`folds')*`index_size_sum_neg'
+        mata: any_weight[1, `f_iter'] = (1/`folds')*`any_weight_sum_neg'
 			}
 			else {
         dis in red "ERROR: Folds do not agree about index sign. Consider re-running with a two-sided test."
@@ -268,42 +294,50 @@ program define optimusindex, eclass
 			}
 		}
 		else {
+      mata: nontrivial_weight[1, `f_iter'] = (1/`folds')*`index_size_sum'
+      mata: any_weight[1, `f_iter'] = (1/`folds')*`any_weight_sum'
 			quietly egen `optindex_all' = rowmean( `optindex_1'-`optindex_`folds'' ) `if' // Generate optimus across all folds
 		}
 		quietly replace `optindex_all' = `optindex_all' * `folds' `if'
 
     // Regress optimus on treatment
     quietly reg `optindex_all' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
-    mata: b_by_iter[`fold_iter', 1] = _b[`treatment']  // Store the optimus coefficient
-    local t_0 = _b[`treament']/_se[`treatment']
+    local b = _b[`treatment']
+    local se = _se[`treatment']
+    mata: b_by_iter[`fold_iter', 1] = `b'  // Store the optimus coefficient
+    local t_0 = `b' / `se'
 
-    local rw_index = 2  // index 1 is the optimus which is handled separately
-    foreach y of varlist `rw' {
-      quietly reg `y' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
-      local t_`rw_index' = _b[`treament']/_se[`treatment']
+    if ("`rw'" != "") {
+      local rw_index = 2  // index 1 is the optimus which is handled separately
+      foreach y of varlist `rw' {
+        quietly reg `y' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
+        local b = _b[`treament']
+        local se = _se[`treatment']
+        local t_`rw_index' = `b' / `se'
+      }
     }
 
     if (`onesided') {
       if ("`sign'" == "pos") {
         mata: p_actual[1, 1] = 1-normal(`t_0')
-        if ("`rw'" != "`'") {
+        if ("`rw'" != "") {
           forval rw_index = 2(1)`vars_rw' {
               mata: p_actual[1, `rw_index'] = 1-normal(`t_`rw_index'')
           }
         }
       }
       else {
-        mata: p_actual[1, 1] = 1-normal(-`t_0')
-        if ("`rw'" != "`'") {
+        mata: p_actual[1, 1] = 1-normal(-1*`t_0')
+        if ("`rw'" != "") {
           forval rw_index = 2(1)`vars_rw' {
-              mata: p_actual[1, `rw_index'] = 1-normal(-`t_`rw_index'')
+              mata: p_actual[1, `rw_index'] = 1-normal(-1*`t_`rw_index'')
           }
         }
       }
     }
     else {
       mata: p_actual[1, 1] = 2*(1-normal(abs(`t_0')))
-      if ("`rw'" != "`'") {
+      if ("`rw'" != "") {
         forval rw_index = 2(1)`vars_rw' {
             mata: p_actual[1, `rw_index'] = 2*(1-normal(abs(`t_`rw_index'')))
         }
@@ -314,16 +348,21 @@ program define optimusindex, eclass
     * Now calculate the RI p-value for this split
     *********************************************************************************
 
-    for ri = 1(1)`ri_iterations' {
+    forval ri = 1(1)`ri_iterations' {
+
+      foreach x in `cell_centile' `rdraw' `treatment_cells' `treatment_bs' `rank' `max' `eligible' `treatment_r_permuted' `treatment_prob' {
+        capture drop `x'
+      }
 
       // Generate a permuted treatment assignment
-      quietly gen byte `treatment_bs' = `treatment'rw_rdraw_var if `all_outcomes'
+      quietly gen byte `treatment_bs' = `treatment' if `all_outcomes'
       if ( "`stratify'" != "" ) {
           quietly egen int `treatment_cells' = group( `stratify' `fold') `if' & `treatment_bs' != .
       }
       else {
           quietly gen int `treatment_cells' = `fold' `if' & `treatment_bs' != .
       }
+
       sum `treatment_cells', meanonly
       local total_cells = r(max)
       if ( `total_cells' > 500 ) {
@@ -332,7 +371,7 @@ program define optimusindex, eclass
       quietly bysort `treatment_cells': egen double `treatment_prob' = mean( `treatment_bs' ) `if' & `treatment_bs' != . & `all_covariates'
       sort `sort_order'
 
-      cluster_random_number `cluster', output_var(`rdraw')  // Random assignment to each cluster (ensures same treatment status of clusters)
+      cluster_random_number `treatment_cluster', output_var(`rdraw')  // Random assignment to each cluster (ensures same treatment status of clusters)
       quietly bysort `treatment_cells': egen long `rank' = rank( `rdraw' ) `if' & `treatment_bs' != ., track
       quietly by `treatment_cells': egen long `max' = max( `rank' ) `if' & `treatment_bs' != .
       sort `sort_order'
@@ -345,9 +384,7 @@ program define optimusindex, eclass
       quietly replace `eligible' = 1 `if'
       quietly replace `treatment_bs' = . if !`eligible'
       quietly reg `treatment_bs' `covariates' [`weight' `exp'] `if' // Residualize the treatment for SUR
-      capture drop `treatment_r_permuted'
       quietly predict `treatment_r_permuted' if e(sample), resid
-      drop `eligible' `rank' `max' `cell_centile'
 
       // Now calculate the optimus matrix coefficient on the permuted treatment assignment
       mata: votes = J( `folds', 1, . ) // Will fill in with 1 for positive and 0 for negative
@@ -356,7 +393,7 @@ program define optimusindex, eclass
         // Estimate coefficients and covariance matrix for optimus
         gen_coeff_and_covar	`varlist' `if' & `fold' != `f', treatment_r(`treatment_r_permuted') covariates(`covariates') treatment_cluster(`cluster') ///
           rdraw(`rdraw') all_covariates(`all_covariates') fv(`f') prescreen_cutoff(`prescreen_cutoff') bootstrap_cov(`bootstrap_cov') ///
-          cov_bootstrapreps(`cov_bootstrapreps')
+          cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors')
 
         // Get the optimal index
         capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
@@ -424,29 +461,41 @@ program define optimusindex, eclass
 
       // Regress optimus on treatment
       quietly reg `optindex_all' `treatment_bs' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
-      local t_0 = _b[`treatment_bs']/_se[`treatment_bs']
+      local b = _b[`treatment_bs']
+      local se = _se[`treatment_bs']
+      local t_0 = `b' / `se'
+
+      if ("`rw'" != "") {
+        local rw_index = 2  // index 1 is the optimus which is handled separately
+        foreach y of varlist `rw' {
+          quietly reg `y' `treatment_bs' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
+          local b = _b[`treatment_bs']
+          local se = _se[`treatment_bs']
+          local t_`rw_index' = `b' / `se'
+        }
+      }
 
       if (`onesided') {
         if ("`sign'" == "pos") {
           mata: p_student[`ri', 1] = 1-normal(`t_0')
-          if ("`rw'" != "`'") {
+          if ("`rw'" != "") {
             forval rw_index = 2(1)`vars_rw' {
                 mata: p_student[`ri', `rw_index'] = 1-normal(`t_`rw_index'')
             }
           }
         }
         else {
-          mata: p_student[`ri', 1] = 1-normal(-`t_0')
-          if ("`rw'" != "`'") {
+          mata: p_student[`ri', 1] = 1-normal(-1*`t_0')
+          if ("`rw'" != "") {
             forval rw_index = 2(1)`vars_rw' {
-                mata: p_student[`ri', `rw_index'] = 1-normal(-`t_`rw_index'')
+                mata: p_student[`ri', `rw_index'] = 1-normal(-1*`t_`rw_index'')
             }
           }
         }
       }
       else {
         mata: p_student[`ri', 1] = 2*(1-normal(abs(`t_0')))
-        if ("`rw'" != "`'") {
+        if ("`rw'" != "") {
           forval rw_index = 2(1)`vars_rw' {
               mata: p_student[`ri', `rw_index'] = 2*(1-normal(abs(`t_`rw_index'')))
           }
@@ -594,14 +643,11 @@ end
 cap program drop cluster_random_number
 program define cluster_random_number
 	syntax varlist, output_var(string)
-	tempvar order select random random2
+	tempvar order select random
 	quietly gen long `order' = _n
 	quietly egen byte `select' = tag( `varlist' )
 	quietly gen double `random' = runiform() if `select'
-	quietly gen double `random2' = runiform()
-  capture drop `output_var'
-	quietly gen double `output_var' = `random'
-	quietly bysort `varlist' `random2': replace `output_var' = `output_var'[_N]
+	quietly bysort `varlist': egen double `output_var' = mean( `random' )
 	sort `order'
 end
 
@@ -648,7 +694,7 @@ end
 cap program drop gen_coeff_and_covar
 program define gen_coeff_and_covar
 	syntax varlist [if] [aweight], treatment_r(varname) treatment_cluster(varname) rdraw(varname) ///
-		all_covariates(varname) fv(integer) [covariates(varlist) prescreen_cutoff(real 1.2) bootstrap_cov(integer 0) cov_bootstrapreps(real 10) ///
+		all_covariates(varname) fv(integer) vce(string) [covariates(varlist) prescreen_cutoff(real 1.2) bootstrap_cov(integer 0) cov_bootstrapreps(real 10) ///
 		inflation_factor_base(real 0.3) inflation_factor_rho(real 0.3)]
 	local count_full = 0
 	local count_catch = 0
@@ -662,11 +708,11 @@ program define gen_coeff_and_covar
 	if ( `vars_in_group' < 6 ) {
 		local prescreen_cutoff = 0
 	}
-	else if ( `vars_in_group' < 12 ) { // GSK: What exactly is the prescreen cutoff doing?
+	else if ( `vars_in_group' < 12 ) {
 		local prescreen_cutoff = min( 0.5, `prescreen_cutoff' )
 	}
 	foreach outcome of varlist `varlist' {
-		quietly reg `outcome'_sd `treatment_r' `covariates' [`weight' `exp'] `if', cluster( `treatment_cluster' ) // Screen out small t-stats and drop dep vars with almost no variation to make the SUR system manageable
+		quietly reg `outcome'_sd `treatment_r' `covariates' [`weight' `exp'] `if', vce(`vce') // Screen out small t-stats and drop dep vars with almost no variation to make the SUR system manageable
 		if ( `++count_catch' == 1 ) {
 			mata: temp_string_catch[1] = "`outcome'" // Record first outcome name
 			local outcome1 `outcome'
@@ -685,6 +731,16 @@ program define gen_coeff_and_covar
 	}
 	else {
 		mata: bname = temp_string_full[1..`count_full'] // Final vector of outcome names
+    mata: included_vars = J(1, `vars_in_group', 0)  // For assigning 0 weights to all excluded variables in recording average weights
+    tokenize "`varlist'"
+    forval j = 1(1)`count_full' {
+      mata: st_local("temp_name", bname[`j'])
+      forval i = 1(1)`vars_in_group' {
+        if "``i''" == "`temp_name'" {
+          mata: included_vars[`i'] = 1
+        }
+      }
+    }
 	}
 	quietly reg `rdraw' `prescreen_level' [`weight' `exp'] `if' & `all_covariates'
 	mata: b_screen = st_matrix( "e(b)" )
@@ -699,7 +755,7 @@ program define gen_coeff_and_covar
 		local group_varlist `screened_group_level'
 	}
 	local group_count = 0
-	foreach outcome of varlist `group_varlist' { // GSK: So SUR is used to estimate the coefficients and covariance matrix (within each of the other folds) for index construction?
+	foreach outcome of varlist `group_varlist' {
 		local estimation_cmd "`estimation_cmd' (`outcome'`depvar_suffix' `treatment_r')" // Construct the preliminary sureg command
 		mata: y`++group_count' = st_data( ., "`outcome'`depvar_suffix'" ) // Get the LHS vars into Mata
 		if ( `group_count' == 1 ) {
