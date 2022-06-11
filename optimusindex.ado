@@ -6,7 +6,7 @@ program define optimusindex, eclass
   syntax varlist [if] [aweight], treatment(varname) ///
   [cluster(varlist) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
   folds(integer 10) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) expshare(real 0.5) cov_shrinkage(real 0.5) ///
-  concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist)]
+  concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist) strat_nulltreat_fold(integer 1)]
 
   tempfile _torestore
   quietly save `_torestore'
@@ -87,10 +87,15 @@ program define optimusindex, eclass
     local std_errors "hc3"
   }
 
-  // Residualize and standardize outcome variables
+  // Residualize and standardize outcome variables (only standardize if doesn't exist, assumes treat = 0 gives control)
   foreach var of varlist `varlist' {
-    capture drop `var'_sd
-    quietly egen `var'_sd = std(`var')
+    capture confirm variable `var'_sd
+    if _rc {
+      quietly summarize `var' if `treatment' == 0
+      local r_mean = r(mean)
+  		local r_sd = r(sd)
+  		quietly gen `var'_sd = ( `var' -`r_mean' ) / `r_sd'
+    }
   }
   if ("`covariates'" != "")  {
     residualize_variables `varlist' `if' [`weight' `exp'], covariates(`covariates')
@@ -356,17 +361,32 @@ program define optimusindex, eclass
 
       // Generate a permuted treatment assignment
       quietly gen byte `treatment_bs' = `treatment' if `all_outcomes'
-      if ( "`stratify'" != "" ) {
-          quietly egen int `treatment_cells' = group( `stratify' `fold') `if' & `treatment_bs' != .
+      if (`strat_nulltreat_fold') {
+        if ( "`stratify'" != "" ) {
+            quietly egen int `treatment_cells' = group( `stratify' `fold') `if' & `treatment_bs' != .
+        }
+        else {
+            quietly gen int `treatment_cells' = `fold' `if' & `treatment_bs' != .
+        }
       }
       else {
-          quietly gen int `treatment_cells' = `fold' `if' & `treatment_bs' != .
+        if ( "`stratify'" != "" ) {
+            quietly egen int `treatment_cells' = group( `stratify') `if' & `treatment_bs' != .
+        }
+        else {
+            quietly gen int `treatment_cells' = 1 `if' & `treatment_bs' != .
+        }
       }
 
       sum `treatment_cells', meanonly
       local total_cells = r(max)
       if ( `total_cells' > 500 ) {
-        dis "WARNING: You have specified that treatment probability varies across more than 500 cells!"
+        if (`strat_nulltreat_fold') {
+          dis "WARNING: You have specified that treatment probability varies across more than 500 cells! Consider setting strat_nulltreat_fold(0)."
+        }
+        else {
+          dis "WARNING: You have specified that treatment probability varies across more than 500 cells!"
+        }
       }
       quietly bysort `treatment_cells': egen double `treatment_prob' = mean( `treatment_bs' ) `if' & `treatment_bs' != . & `all_covariates'
       sort `sort_order'
@@ -518,23 +538,25 @@ program define optimusindex, eclass
   // Now generate statistics to return
   mata: p_w_index = matrix_median(p_by_iter)
   mata: p = p_w_index[1, 1]
+
   // Record the index (or indices) of the CV draw associated with the median p value
-  if (mod(`fold_iter', 1) == 0) {  // Then the median is associated with 2 index values
+  if (mod(`fold_iterations', 2) == 0) {  // Then the median is associated with 2 index values
     local med_indices = 2
-    local med_index_1 = p_w_index[1, 2]
-    local med_index_2 = p_w_index[1, 3]
+    mata: med_index_1 = p_w_index[1, 2]
+    mata: med_index_2 = p_w_index[1, 3]
   }
   else {
     local med_indices = 1
-    local med_index = p_w_index[1, 2]
+    mata: med_index = p_w_index[1, 2]
   }
+
   // Now extract the RW p-values associated with the median unadjusted p-value split
   if ("`rw'" != "") {
     if (`med_indices' == 1) {
-      mata: p_rw = p_rw_by_iter[, `med_index']'
+      mata: p_rw = p_rw_by_iter[, med_index]'
     }
     else {
-      mata: p_rw = 0.5*p_rw_by_iter[, `med_index_1']' + 0.5*p_rw_by_iter[, `med_index_2']'
+      mata: p_rw = 0.5*p_rw_by_iter[, med_index_1]' + 0.5*p_rw_by_iter[, med_index_2]'
     }
   }
 
@@ -559,37 +581,41 @@ program define optimusindex, eclass
   }
 
   if (`med_indices' == 1) {
-    mata: median_b = b_by_iter[`med_index', 1]
-    mata: median_weights = average_weights[,`med_index']
-    mata: median_any_weight = any_weight[`med_index', 1]
-    mata: median_nontrivial_weight = nontrivial_weight[`med_index', 1]
-    if (`onsided') {
-      mata: median_pos = pos_by_iter[`med_index', 1]
+    mata: median_b = b_by_iter[med_index, 1]
+    mata: median_weights = average_weights[,med_index]
+    mata: median_any_weight = any_weight[med_index, 1]
+    mata: median_nontrivial_weight = nontrivial_weight[med_index, 1]
+    if (`onesided') {
+      mata: median_pos = pos_by_iter[med_index, 1]
     }
   }
   else {
-    mata: median_b = 0.5*b_by_iter[`med_index_1', 1] + 0.5*b_by_iter[`med_index_2', 1]
-    mata: median_weights = 0.5*average_weights[,`med_index_1'] + 0.5*average_weights[,`med_index_2']
-    mata: median_any_weight = 0.5*any_weight[`med_index_1', 1] + 0.5*any_weight[`med_index_2', 1]
-    mata: median_nontrivial_weight = 0.5*nontrivial_weight[`med_index_1', 1] + 0.5*nontrivial_weight[`med_index_2', 1]
-    if (`onsided') {
-      mata: median_pos = 0.5*pos_by_iter[`med_index_1', 1] + 0.5*pos_by_iter[`med_index_2', 1]
+    mata: median_b = 0.5*b_by_iter[med_index_1, 1] + 0.5*b_by_iter[med_index_2, 1]
+    mata: median_weights = 0.5*average_weights[,med_index_1] + 0.5*average_weights[,med_index_2]
+    mata: median_any_weight = 0.5*any_weight[med_index_1, 1] + 0.5*any_weight[med_index_2, 1]
+    mata: median_nontrivial_weight = 0.5*nontrivial_weight[med_index_1, 1] + 0.5*nontrivial_weight[med_index_2, 1]
+    if (`onesided') {
+      mata: median_pos = 0.5*pos_by_iter[med_index_1, 1] + 0.5*pos_by_iter[med_index_2, 1]
     }
   }
 
   mata: mean_b = mean(b_by_iter)
-  if (`onsided') {
+  if (`onesided') {
     mata: mean_pos = mean(pos_by_iter)
   }
   mata: mean_weights = mean(average_weights)
   mata: mean_any_weight = mean(any_weight)
-  mata: median_nontrivial_weight = mean(nontrivial_weight)
+  mata: mean_nontrivial_weight = mean(nontrivial_weight)
 
   use `_torestore', clear
 
+  mata: st_numscalar("e(_b)", median_b)  // Returning directly to e(b) fails since protected
+  tempname b
+  matrix `b' = e(_b)
+  ereturn post `b'
+
   mata: st_numscalar("e(p)", p)
-  mata: st_numscalar("e(b)", median_b)
-  if (`onsided') {
+  if (`onesided') {
       mata: st_numscalar("e(pos)", median_pos)
       mata: st_numscalar("e(mean_pos)", mean_pos)
       mata: st_matrix("e(pos_by_split)", pos_by_iter)
@@ -605,13 +631,13 @@ program define optimusindex, eclass
 
   mata: st_matrix("e(p_by_split)", p_by_iter[,1])
   mata: st_matrix("e(b_by_split)", b_by_iter)
-  mata: st_matrix("e(weights_by_split)", weights_by_iter)
+  mata: st_matrix("e(weights_by_split)", average_weights)
   mata: st_matrix("e(any_weight_by_split)", any_weight)
   mata: st_matrix("e(nontrivial_weight_by_split)", nontrivial_weight)
 
   if ("`rw'" != "") {
     mata: st_matrix("e(p_rw)", p_rw)
-    dis "Index coefficient: `e(b)'"
+    dis "Index coefficient: `e(_b)'"
     if (`onesided') {
       dis "Index positive: `e(pos)'"
     }
@@ -623,7 +649,7 @@ program define optimusindex, eclass
     mata: median_weights
   }
   else {
-    dis "Index coefficient: `e(b)'"
+    dis "Index coefficient: `e(_b)'"
     if (`onesided') {
       dis "Index positive: `e(pos)'"
     }
@@ -942,24 +968,32 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 		max_power_index = .
 		ties = .
 		for (negative = 0; negative <= 1; negative++ ) {
-			if ( !negative * !sum( beta :>= 0 ) ) {
-				temp_power[1] = 0
-				w[1,1] = 1  // Arbitrary, since power is 0 in this case
+      if ( !negative * !sum( beta :>= 0 ) ) {
+				// Positive direction and no positive betas
+				temp_power[1] = 0 // Zero out power in that direction
+				maxindex( beta, 1, max_power_index, ties ) // Chooose the least negative beta (shouldn't really matter)
+				max_power_index = max_power_index[1]
+				w[1,max_power_index] = 1 // Assign all weight to that beta
 			}
 			else if ( !negative * ( sum( beta :>= 0 ) == 1 ) ) {
-        maxindex(beta :>= 0, 1, max_power_index, .)
+				// Positive direction and one positive beta
+				maxindex( beta, 1, max_power_index, ties ) // Chooose the positive beta
 				max_power_index = max_power_index[1]
-				w[1,max_power_index] = 1
+				w[1,max_power_index] = 1 // Assign all weight to that beta
 				temp_power[1] = beta[max_power_index] / sqrt( ( exp_share / ( 1 - exp_share ) ) * V[max_power_index,max_power_index] )
 			}
 			else if ( negative * !sum( beta :< 0 ) ) {
-				temp_power[2] = 0
-				w[2,1] = 1  // Arbitrary, since power is 0 in this case
+				// Negative direction and no negative betas
+				temp_power[2] = 0 // Zero out power in that direction
+				minindex( beta, 1, max_power_index, ties ) // Chooose the least positive beta (shouldn't really matter)
+				max_power_index = max_power_index[1]
+				w[2,max_power_index] = 1 // Assign all weight to that beta
 			}
 			else if ( negative * ( sum( beta :< 0 ) == 1 ) ) {
-        maxindex(beta :<= 0, 1, max_power_index, .)
-        max_power_index = max_power_index[1]
-				w[2,max_power_index] = 1
+				// Negative direction and one negative beta
+				minindex( beta, 1, max_power_index, ties )
+				max_power_index = max_power_index[1]
+				w[2,max_power_index] = 1  // Assign all weight to that beta
 				temp_power[2] = abs( beta[max_power_index] / sqrt( ( exp_share / ( 1 - exp_share ) ) * V[max_power_index,max_power_index] ) )
 			}
 			else {
