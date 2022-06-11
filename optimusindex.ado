@@ -13,7 +13,7 @@ program define optimusindex, eclass
 
   // Generate group selection matrices for optimal summary index
   clear
-  set obs 2
+  quietly set obs 2
 
   // Generate binary indicators for all potential index components up to group size 10
   local H = 10
@@ -27,7 +27,7 @@ program define optimusindex, eclass
   // Sort so that we can scale down to smaller max group sizes
   sort `sortlist'
   // Load generated combinations into Mata vectors
-  putmata v1-v`H', replace
+  quietly putmata v1-v`H', replace
   //restore
   // use `sbp', clear
   // Merge Mata vectors into single matrix
@@ -50,7 +50,7 @@ program define optimusindex, eclass
 
   local expected_crit_val = 2  // Used in power calculations, but not important since we're just maximizing power which is a monotonic function of t-stats
 
-  generate `fold' = .
+  quietly generate `fold' = .
 
   forvalues f = 1(1)`folds' {
     tempvar optindex_`f' optindex_pos_`f' optindex_neg_`f'
@@ -150,7 +150,7 @@ program define optimusindex, eclass
       quietly egen `strata_grp' = group(`treatment')
     }
 
-  	replace `fold' = .
+  	quietly replace `fold' = .
   	local step = 100 / `folds'
 
     local end_cent = `folds' + 1
@@ -575,8 +575,10 @@ program define optimusindex, eclass
     local full_rw_names = "optimus `rw'"
     tokenize "`full_rw_names'"
     forval rw_index = 1(1)`vars_rw' {
-      mata: p_rw_display[1, `rw_index'] = "`rw_index'"
-      mata: p_rw_display[2, `rw_index'] = p_rw_display[1, `rw_index']
+      mata: p_rw_display[1, `rw_index'] = "``rw_index''"
+      mata: st_numscalar("tmp", p_rw_rounded[1, `rw_index'])
+      local tmp = tmp
+      mata: p_rw_display[2, `rw_index'] = "`tmp'"
     }
   }
 
@@ -606,6 +608,17 @@ program define optimusindex, eclass
   mata: mean_weights = mean(average_weights)
   mata: mean_any_weight = mean(any_weight)
   mata: mean_nontrivial_weight = mean(nontrivial_weight)
+
+  // Diplay version of median weights
+  mata: weights_rounded = round(median_weights, 0.01)
+  mata: weights_display = J(2, `vars_in_group', "")
+  tokenize "`varlist'"
+  forval ind = 1(1)`vars_in_group' {
+    mata: weights_display[1, `ind'] = "``ind''"
+    mata: st_numscalar("tmp", weights_rounded[`ind'])
+    local tmp = tmp
+    mata: weights_display[2, `ind'] = "`tmp'"
+  }
 
   use `_torestore', clear
 
@@ -645,8 +658,8 @@ program define optimusindex, eclass
     dis "Romano-Wolf adjusted p-values"
     mata: p_rw_display
     dis "Average number of weights > 1/H across folds: `e(nontrivial_weight)'"
-    dis "Average weights"
-    mata: median_weights
+    dis "Average weights across folds:"
+    mata: weights_display
   }
   else {
     dis "Index coefficient: `e(_b)'"
@@ -655,8 +668,8 @@ program define optimusindex, eclass
     }
     dis "Index p-value: `e(p)'"
     dis "Average number of weights > 1/H across folds: `e(nontrivial_weight)'"
-    dis "Average weights"
-    mata: median_weights
+    dis "Average weights across folds:"
+    mata: weights_display
   }
 
 end
