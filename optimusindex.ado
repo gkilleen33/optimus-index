@@ -54,9 +54,6 @@ program define optimusindex, eclass
 
   forvalues f = 1(1)`folds' {
     tempvar optindex_`f' optindex_pos_`f' optindex_neg_`f'
-    quietly gen `optindex_`f'' = .
-    quietly gen `optindex_pos_`f'' = .
-    quietly gen `optindex_neg_`f'' = .
   }
 
   local varlist: list uniq varlist // Trim any duplicate variables from the list of outcomes
@@ -97,7 +94,14 @@ program define optimusindex, eclass
   		quietly gen `var'_sd = ( `var' -`r_mean' ) / `r_sd'
     }
   }
+  // Residualize, just demeans if no covariates
   if ("`covariates'" != "")  {
+    residualize_variables `varlist' `if' [`weight' `exp'], covariates(`covariates')
+    foreach var of varlist `varlist' {
+      residualize_variables `var'_sd `if' [`weight' `exp'], covariates(`covariates') suffix_out(r)
+    }
+  }
+  else {
     residualize_variables `varlist' `if' [`weight' `exp'], covariates(`covariates')
     foreach var of varlist `varlist' {
       residualize_variables `var'_sd `if' [`weight' `exp'], covariates(`covariates') suffix_out(r)
@@ -123,6 +127,20 @@ program define optimusindex, eclass
   }
 
   forvalues f_iter = 1(1)`fold_iterations' {
+
+    if ( `onesided' ) {
+			forvalues f = 1(1)`folds' {
+				quietly gen `optindex_pos_`f'' = .
+			}
+			forvalues f = 1(1)`folds' {
+				quietly gen `optindex_neg_`f'' = .
+			}
+		}
+		else {
+			forvalues f = 1(1)`folds' {
+				quietly gen `optindex_`f'' = .
+			}
+		}
 
     // Note: We store p-values so that RI uses a pivotal statistic
     if ("`rw'" != "") {
@@ -166,7 +184,6 @@ program define optimusindex, eclass
     }
 
     // Calculate the index on the actual data
-    // GSK: Is there any reason we can't do this as opposed to passing a treatment_resid variable?
     quietly reg `treatment' `covariates' [`weight' `exp'] `if' // Residualize the treatment for SUR
     capture drop `treatment_r'
     quietly predict `treatment_r' if e(sample), resid
@@ -283,7 +300,6 @@ program define optimusindex, eclass
         mata: pos_by_iter[`fold_iter', 1] = 1    // Calculate the index on the actual data
         mata: nontrivial_weight[1, `f_iter'] = (1/`folds')*`index_size_sum_pos'
         mata: any_weight[1, `f_iter'] = (1/`folds')*`any_weight_sum_pos'
-
 			}
 			else if ( `pct_pos' < 0.33 ) {
 				quietly egen `optindex_all' = rowmean( `optindex_neg_1'-`optindex_neg_`folds'' ) `if' // Generate optimus across all folds
@@ -359,6 +375,20 @@ program define optimusindex, eclass
         capture drop `x'
       }
 
+      if ( `onesided' ) {
+  			forvalues f = 1(1)`folds' {
+  				quietly replace `optindex_pos_`f'' = .
+  			}
+  			forvalues f = 1(1)`folds' {
+  				quietly replace `optindex_neg_`f'' = .
+  			}
+  		}
+  		else {
+  			forvalues f = 1(1)`folds' {
+  				quietly replace `optindex_`f'' = .
+  			}
+  		}
+
       // Generate a permuted treatment assignment
       quietly gen byte `treatment_bs' = `treatment' if `all_outcomes'
       if (`strat_nulltreat_fold') {
@@ -413,7 +443,7 @@ program define optimusindex, eclass
         // Estimate coefficients and covariance matrix for optimus
         gen_coeff_and_covar	`varlist' `if' & `fold' != `f', treatment_r(`treatment_r_permuted') covariates(`covariates') treatment_cluster(`cluster') ///
           rdraw(`rdraw') all_covariates(`all_covariates') fv(`f') prescreen_cutoff(`prescreen_cutoff') bootstrap_cov(`bootstrap_cov') ///
-          cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors')
+          cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors') permuted(1)
 
         // Get the optimal index
         capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
@@ -561,7 +591,7 @@ program define optimusindex, eclass
   }
 
   // Chernozukhov et al. (2018) and Romano and DiCiccio (2019) bound on p-value across multiple fold iterations if no seed specified
-  if (`fold_seed' != 0) {
+  if (`fold_seed' == 0) {
     mata: p = 2*p
     if ("`rw'" != "") {
       mata: p_rw = 2*p_rw
@@ -628,6 +658,7 @@ program define optimusindex, eclass
   ereturn post `b'
 
   mata: st_numscalar("e(p)", p)
+  mata: st_numscalar("e(_b)", median_b)  // Re-create to display as a scalar
   if (`onesided') {
       mata: st_numscalar("e(pos)", median_pos)
       mata: st_numscalar("e(mean_pos)", mean_pos)
@@ -734,7 +765,7 @@ cap program drop gen_coeff_and_covar
 program define gen_coeff_and_covar
 	syntax varlist [if] [aweight], treatment_r(varname) treatment_cluster(varname) rdraw(varname) ///
 		all_covariates(varname) fv(integer) vce(string) [covariates(varlist) prescreen_cutoff(real 1.2) bootstrap_cov(integer 0) cov_bootstrapreps(real 10) ///
-		inflation_factor_base(real 0.3) inflation_factor_rho(real 0.3)]
+		inflation_factor_base(real 0.3) inflation_factor_rho(real 0.3) permuted(integer 0)]
 	local count_full = 0
 	local count_catch = 0
 	if ( "`if'" == "" ) {
@@ -757,15 +788,17 @@ program define gen_coeff_and_covar
 			local outcome1 `outcome'
 		}
 		if ( abs( _b[`treatment_r'] / _se[`treatment_r'] ) > `prescreen_cutoff' & e(rmse) > 0.05 ) {
-			local prescreen_level "`prescreen_level' `outcome'`depvar_suffix'" // List of outcomes (SDR)
+			local prescreen_level "`prescreen_level' `outcome'_sdr" // List of outcomes (SDR)
 			local screened_group_level "`screened_group_level' `outcome'" // List of outcomes (raw)
 			mata: temp_string_full[`++count_full'] = "`outcome'" // Fill in vector of outcome names
 		}
 	}
 	if ( `count_full' == 0 ) {
-		dis "No outcome cleared the t-threshold of `prescreen_cutoff' for level index!"
+    if (`permuted' == 0) {  // Only display warning if on actual data
+  		dis "No outcome cleared the t-threshold of `prescreen_cutoff' for level index!"
+    }
 		mata: bname = temp_string_catch[1] // Just take the first outcome if nothing looks good
-		local prescreen_level "`prescreen_level' `outcome1'`depvar_suffix'" // First outcome (SDR)
+		local prescreen_level "`prescreen_level' `outcome1'_sdr" // First outcome (SDR)
 		local screened_group_level "`screened_group_level' `outcome1'" // First outcome (raw)
 	}
 	else {
@@ -795,8 +828,8 @@ program define gen_coeff_and_covar
 	}
 	local group_count = 0
 	foreach outcome of varlist `group_varlist' {
-		local estimation_cmd "`estimation_cmd' (`outcome'`depvar_suffix' `treatment_r')" // Construct the preliminary sureg command
-		mata: y`++group_count' = st_data( ., "`outcome'`depvar_suffix'" ) // Get the LHS vars into Mata
+		local estimation_cmd "`estimation_cmd' (`outcome'_sdr `treatment_r')" // Construct the preliminary sureg command
+		mata: y`++group_count' = st_data( ., "`outcome'_sdr" ) // Get the LHS vars into Mata
 		if ( `group_count' == 1 ) {
 			mata: Y_`fv' = y1
 			mata: depvar_`fv' = "`outcome'"
