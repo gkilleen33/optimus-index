@@ -74,6 +74,9 @@ program define optimusindex, eclass
   }
   quietly egen int `all_outcomes' = rowmiss( `varlist' )
   quietly replace `all_outcomes' = ( `all_outcomes' == 0 )
+
+  replace `treatment' = . if `all_outcomes' == 0
+
   if ( "`if'" == "" ) {
     local if "if 1"
   }
@@ -327,6 +330,8 @@ program define optimusindex, eclass
     local se = _se[`treatment']
     mata: b_by_iter[`fold_iter', 1] = `b'  // Store the optimus coefficient
     local t_0 = `b' / `se'
+
+    mata: N_0 = `e(N)'  // Store the sample size
 
     if ("`rw'" != "") {
       local rw_index = 2  // index 1 is the optimus which is handled separately
@@ -658,6 +663,7 @@ program define optimusindex, eclass
   ereturn post `b'
 
   mata: st_numscalar("e(p)", p)
+  mata: st_numscalar("e(N)", N_0)
   mata: st_numscalar("e(_b)", median_b)  // Re-create to display as a scalar
   if (`onesided') {
       mata: st_numscalar("e(pos)", median_pos)
@@ -685,6 +691,7 @@ program define optimusindex, eclass
     if (`onesided') {
       dis "Index positive: `e(pos)'"
     }
+    dis "N: `e(N)'"
     dis "Index unadjusted p-value: `e(p)'"
     dis "Romano-Wolf adjusted p-values"
     mata: p_rw_display
@@ -697,6 +704,7 @@ program define optimusindex, eclass
     if (`onesided') {
       dis "Index positive: `e(pos)'"
     }
+    dis "N: `e(N)'"
     dis "Index p-value: `e(p)'"
     dis "Average number of weights > 1/H across folds: `e(nontrivial_weight)'"
     dis "Average weights across folds:"
