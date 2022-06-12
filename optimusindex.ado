@@ -75,7 +75,7 @@ program define optimusindex, eclass
   quietly egen int `all_outcomes' = rowmiss( `varlist' )
   quietly replace `all_outcomes' = ( `all_outcomes' == 0 )
 
-  replace `treatment' = . if `all_outcomes' == 0
+  quietly replace `treatment' = . if `all_outcomes' == 0
 
   if ( "`if'" == "" ) {
     local if "if 1"
