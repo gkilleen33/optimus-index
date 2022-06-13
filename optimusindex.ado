@@ -5,7 +5,7 @@
 program define optimusindex, eclass
   syntax varlist [if] [aweight], treatment(varname) ///
   [cluster(varlist) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
-  folds(integer 10) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) expshare(real 0.5) cov_shrinkage(real 0.5) ///
+  folds(integer 10) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) cov_shrinkage(real 0.5) ///
   concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist) strat_nulltreat_fold(integer 1)]
 
   tempfile _torestore
@@ -210,19 +210,19 @@ program define optimusindex, eclass
 
       // Get the optimal index
       capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
-        min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `expshare', `cov_shrinkage', ///
+        min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', ///
         `unweighted', cov_V, `concen_weight' )
 
       if ( _rc == 430 ) {
         dis "Mata optimizer failed to find a solution on rep `r'. Trying slightly different covariance shrinkage factor for this rep."
         local temp_cov_shrink = `cov_shrinkage' * 0.9
         capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
-          min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `expshare', `temp_cov_shrink', ///
+          min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `temp_cov_shrink', ///
           `unweighted', cov_V, `concen_weight' )
         if ( _rc == 430 ) {
           dis "Mata optimizer failed to find a solution on rep `r'. Reverting to unweighted index for this rep."
           mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
-            min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `expshare', `cov_shrinkage', 1, ///
+            min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', 1, ///
             cov_V, `concen_weight' )
         }
       }
@@ -452,19 +452,19 @@ program define optimusindex, eclass
 
         // Get the optimal index
         capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
-          min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `expshare', `cov_shrinkage', ///
+          min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', ///
           `unweighted', cov_V, `concen_weight' )
 
         if ( _rc == 430 ) {
           dis "Mata optimizer failed to find a solution on rep `r'. Trying slightly different covariance shrinkage factor for this rep."
           local temp_cov_shrink = `cov_shrinkage' * 0.9
           capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
-            min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `expshare', `temp_cov_shrink', ///
+            min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `temp_cov_shrink', ///
             `unweighted', cov_V, `concen_weight' )
           if ( _rc == 430 ) {
             dis "Mata optimizer failed to find a solution on rep `r'. Reverting to unweighted index for this rep."
             mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
-              min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `expshare', `cov_shrinkage', 1, ///
+              min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', 1, ///
               cov_V, `concen_weight' )
           }
         }
@@ -931,7 +931,7 @@ function sort_cov_matrix(real matrix V, real vector beta, real scalar descending
 // For unweighted index, the row vector should be sorted by t-stat. For weighted index, order shouldn't matter.
 // Fast flag assumes the optimal index respects monotonicity of t-stats (in either direction)
 // Function searches for the optimal summary index in the both directions (positive and negative)
-function summary_power_calc( real rowvector beta, real matrix covariance, real matrix select_variables, real scalar crit_val, real scalar fast, real scalar exp_share, real scalar cov_shrinkage_factor, real scalar unweighted, real matrix cov_covariance, real scalar concen_weight )
+function summary_power_calc( real rowvector beta, real matrix covariance, real matrix select_variables, real scalar crit_val, real scalar fast, real scalar cov_shrinkage_factor, real scalar unweighted, real matrix cov_covariance, real scalar concen_weight )
 {
 	//	Standardize everything
 	V = covariance
@@ -1002,7 +1002,7 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 		end_val = rows( select_variables_internal )
 		se_index = J( end_val, 1, . )
 		for ( i = 1; i <= end_val; i++ ) {
-			se_index[i] = sqrt( ( exp_share / ( 1 - exp_share ) ) * ( select_variables_internal[i, .] * V * select_variables_internal[i, .]' ) ///
+			se_index[i] = sqrt( ( select_variables_internal[i, .] * V * select_variables_internal[i, .]' ) ///
 				/ ( row_size[i] ^ 2 + ( row_size[i] == 0 ) * 0.01 ) + ( row_size[i] == 0 ) * 0.01 )
 		}
 		weights_internal = select_variables_internal :/ ( row_size + ( row_size :== 0 ) * 0.01 )
@@ -1034,7 +1034,7 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 				maxindex( beta, 1, max_power_index, ties ) // Chooose the positive beta
 				max_power_index = max_power_index[1]
 				w[1,max_power_index] = 1 // Assign all weight to that beta
-				temp_power[1] = beta[max_power_index] / sqrt( ( exp_share / ( 1 - exp_share ) ) * V[max_power_index,max_power_index] )
+				temp_power[1] = beta[max_power_index] / sqrt( V[max_power_index,max_power_index] )
 			}
 			else if ( negative * !sum( beta :< 0 ) ) {
 				// Negative direction and no negative betas
@@ -1048,7 +1048,7 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 				minindex( beta, 1, max_power_index, ties )
 				max_power_index = max_power_index[1]
 				w[2,max_power_index] = 1  // Assign all weight to that beta
-				temp_power[2] = abs( beta[max_power_index] / sqrt( ( exp_share / ( 1 - exp_share ) ) * V[max_power_index,max_power_index] ) )
+				temp_power[2] = abs( beta[max_power_index] / sqrt( V[max_power_index,max_power_index] ) )
 			}
 			else {
 				S = optimize_init()
@@ -1058,9 +1058,8 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 				optimize_init_argument( S, 1, b )
 				optimize_init_argument( S, 2, V )
 				optimize_init_argument( S, 3, crit_val )
-				optimize_init_argument( S, 4, exp_share )
-				optimize_init_argument( S, 5, negative )
-				optimize_init_argument( S, 6, concen_weight )
+				optimize_init_argument( S, 4, negative )
+				optimize_init_argument( S, 5, concen_weight )
 				optimize_init_constraints( S, ( J( 1, length( b ), 1 ), 1 ) ) // Constrain weights to sum to 1
 				optimize_init_conv_maxiter( S, 100 )
 				optimize_init_params( S, J( 1, length( b ), 1 / length( b ) ) + 0.1 * ( b :== max( b ) ) )
@@ -1075,29 +1074,29 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 // Optimus weighted power function, d1 solution (with gradient)
 // Code the [0,1] interval constraint a little loosely using a high-order polynomial
 // Maximize the expected t-stat, since power is a monotonic transformation of that.
-void optimus(todo, w, b, V, crit_val, exp_share, negative, con_wgt, power, g, H)
+void optimus(todo, w, b, V, crit_val, negative, con_wgt, power, g, H)
 {
 	if ( !negative ) {  // GSK: Can we just take the absolute value of the first term to get rid of the negative accounting?
-		power = ( b * w' ) / sqrt( ( exp_share / ( 1 - exp_share ) ) * w * V * w' )  -
+		power = ( b * w' ) / sqrt( w * V * w' )  -
 			.001 * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )  // GSK: con_wgt is the hyper-parameter on the HHI penalty
 			// GSK: The .001 * sum( ( 2 * w :- 1 ) :^ 200 ) term appears to (loosely) force values to be between 0 and 1.
 		if ( todo >= 1 ) {
 			end_val = length( b )
 			Vw = V * w'
 			for ( i = 1; i <= end_val; i++ ) {
-				g[i] =  ( b[i] / sqrt( w * V * w' ) - b * w' * Vw[i] * ( w * V * w' ) ^ -1.5 ) / sqrt( exp_share / ( 1 - exp_share ) ) -
+				g[i] =  ( b[i] / sqrt( w * V * w' ) - b * w' * Vw[i] * ( w * V * w' ) ^ -1.5 ) -
 					0.4 * ( 2 * w[i] - 1 ) ^ 199 - con_wgt * 2 * w[i]
 			}
 		}
 	}
 	else {
-		power = -( b * w' ) / sqrt( ( exp_share / ( 1 - exp_share ) ) * w * V * w' )  -
+		power = -( b * w' ) / sqrt( w * V * w' )  -
 			.001 * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )
 		if ( todo >= 1 ) {
 			end_val = length( b )
 			Vw = V * w'
 			for ( i = 1; i <= end_val; i++ ) {
-				g[i] =  -( b[i] / sqrt( w * V * w' ) - b * w' * Vw[i] * ( w * V * w' ) ^ -1.5 ) / sqrt( exp_share / ( 1 - exp_share ) ) -
+				g[i] =  -( b[i] / sqrt( w * V * w' ) - b * w' * Vw[i] * ( w * V * w' ) ^ -1.5 ) -
 					0.4 * ( 2 * w[i] - 1 ) ^ 199 - con_wgt * 2 * w[i]
 			}
 		}
