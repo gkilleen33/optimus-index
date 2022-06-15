@@ -60,7 +60,7 @@ program define optimusindex, eclass
   local vars_in_group = wordcount( "`varlist'" )
 
   if ("`rw'" != "") {
-    local rw: list unique `rw'
+    local rw: list uniq rw
     local vars_rw = wordcount("`rw'") + 1  // Plus 1 since the optimus index is also included
   }
 
@@ -76,6 +76,7 @@ program define optimusindex, eclass
   quietly replace `all_outcomes' = ( `all_outcomes' == 0 )
 
   quietly replace `treatment' = . if `all_outcomes' == 0
+  quietly replace `treatment' = . if `all_covariates' == 0  // Limits the sample to observations with no outcomes or covariates missing
 
   if ( "`if'" == "" ) {
     local if "if 1"
@@ -337,12 +338,12 @@ program define optimusindex, eclass
       local rw_index = 2  // index 1 is the optimus which is handled separately
       foreach y of varlist `rw' {
         quietly reg `y' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
-        local b = _b[`treament']
+        local b = _b[`treatment']
         local se = _se[`treatment']
         local t_`rw_index' = `b' / `se'
+        local rw_index = `rw_index' + 1
       }
     }
-
     if (`onesided') {
       if ("`sign'" == "pos") {
         mata: p_actual[1, 1] = 1-normal(`t_0')
@@ -527,6 +528,7 @@ program define optimusindex, eclass
           local b = _b[`treatment_bs']
           local se = _se[`treatment_bs']
           local t_`rw_index' = `b' / `se'
+          local rw_index = `rw_index' + 1
         }
       }
 
@@ -1156,7 +1158,7 @@ function matrix_median(real matrix mat)
 function stepdown(real matrix p_actual, real matrix p_student)
 {
 	// Organize the permuted statistics
-	p_total = ( range( 1, cols( b ), 1 )' \ p_actual \ p_student )
+	p_total = ( range( 1, cols( p_actual ), 1 )' \ p_actual \ p_student )
 	p_sort = sort( p_total', 2 )' // (2 + rw_reps) x H sorted matrix with original order as first row, actual p-val as second
 	endrow = rows( p_sort )
 	endcol = cols( p_sort )
