@@ -134,14 +134,17 @@ program define optimusindex, eclass
 
     if ( `onesided' ) {
 			forvalues f = 1(1)`folds' {
+        capture drop `optindex_pos_`f''
 				quietly gen `optindex_pos_`f'' = .
 			}
 			forvalues f = 1(1)`folds' {
+        capture drop `optindex_neg_`f''
 				quietly gen `optindex_neg_`f'' = .
 			}
 		}
 		else {
 			forvalues f = 1(1)`folds' {
+        capture drop `optindex_`f''
 				quietly gen `optindex_`f'' = .
 			}
 		}
@@ -162,6 +165,7 @@ program define optimusindex, eclass
 
     mata: p_by_iter[`f_iter', 2] = `f_iter'  // Record row number
     capture drop `random_clust'
+    capture drop `strata_grp'
     cluster_random_number `treatment_cluster', output_var(`random_clust')
 
     // Stratify folds on treatment assignment and strata used for randomization GSK: Added stratification on randomization strata. Is this correct?
@@ -188,6 +192,7 @@ program define optimusindex, eclass
     }
 
     // Calculate the index on the actual data
+    capture drop `treatment_r'
     quietly reg `treatment' `covariates' [`weight' `exp'] `if' // Residualize the treatment for SUR
     capture drop `treatment_r'
     quietly predict `treatment_r' if e(sample), resid
@@ -282,7 +287,7 @@ program define optimusindex, eclass
           mata: st_numscalar("var_included", included_vars[`i'])
           local var_included = var_included
           if (`var_included') {
-            mata: average_weights[`i',1] = average_weights[`i',1] + (1/`folds')*normalized_weights[`j']
+            mata: average_weights[`i',`f_iter'] = average_weights[`i',`f_iter'] + (1/`folds')*normalized_weights[`j']
             local j = `j' + 1
           }
         }
@@ -301,7 +306,7 @@ program define optimusindex, eclass
 				local vote_outcome = 1
 				local sign "pos"
         mata: average_weights[,`f_iter'] = average_weights_sign[,1]
-        mata: pos_by_iter[`fold_iter', 1] = 1    // Calculate the index on the actual data
+        mata: pos_by_iter[`f_iter', 1] = 1    // Calculate the index on the actual data
         mata: nontrivial_weight[1, `f_iter'] = (1/`folds')*`index_size_sum_pos'
         mata: any_weight[1, `f_iter'] = (1/`folds')*`any_weight_sum_pos'
 			}
@@ -314,8 +319,10 @@ program define optimusindex, eclass
         mata: any_weight[1, `f_iter'] = (1/`folds')*`any_weight_sum_neg'
 			}
 			else {
-        dis in red "ERROR: Folds do not agree about index sign. Consider re-running with a two-sided test."
-				error 459
+        dis in red "WARNING: Folds do not agree about index sign. Consider re-running with a two-sided test."
+        local fold_disagree = 1
+        local vote_outcome = 0
+        quietly gen `optindex_all' = runiform() `if'
 			}
 		}
 		else {
@@ -328,8 +335,11 @@ program define optimusindex, eclass
     // Regress optimus on treatment
     quietly reg `optindex_all' `treatment' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
     local b = _b[`treatment']
+    if ( `fold_disagree' ) {
+			local b = 0
+		}
     local se = _se[`treatment']
-    mata: b_by_iter[`fold_iter', 1] = `b'  // Store the optimus coefficient
+    mata: b_by_iter[`f_iter', 1] = `b'  // Store the optimus coefficient
     local t_0 = `b' / `se'
 
     mata: N_0 = `e(N)'  // Store the sample size
@@ -518,6 +528,9 @@ program define optimusindex, eclass
       // Regress optimus on treatment
       quietly reg `optindex_all' `treatment_bs' `covariates' [`weight' `exp'] `if', vce( `std_errors' )
       local b = _b[`treatment_bs']
+      if ( `fold_disagree' ) {
+  			local b = 0
+  		}
       local se = _se[`treatment_bs']
       local t_0 = `b' / `se'
 
@@ -563,12 +576,12 @@ program define optimusindex, eclass
     // The unadjusted (for multiple hypothesis testing) p-value of the optimus index is just the share of the time p_actual > p_student (permuted)
     // This already accounts for 1 or 2-sided tests based on how p_actual and p_student are calculated
     mata: p_greater = p_actual[1, 1] :> p_student[ , 1]
-    mata: p_by_iter[`fold_iter', 1] = mean(p_greater)  // Fraction of time actual p-value of optimus index exceeds null
+    mata: p_by_iter[`f_iter', 1] = mean(p_greater)  // Fraction of time actual p-value of optimus index exceeds null
 
     // Calculate the Romano-Wolf vector of p-values for this split, if relevant
     if ("`rw'" != "") {
       mata: temp = stepdown(p_actual, p_student)  // The second row has the RW p-values
-      mata: p_rw_by_iter[ , `fold_iter'] = temp[2, ]'
+      mata: p_rw_by_iter[ , `f_iter'] = temp[2, ]'
     }
   }
 
@@ -622,19 +635,19 @@ program define optimusindex, eclass
   if (`med_indices' == 1) {
     mata: median_b = b_by_iter[med_index, 1]
     mata: median_weights = average_weights[,med_index]
-    mata: median_any_weight = any_weight[med_index, 1]
-    mata: median_nontrivial_weight = nontrivial_weight[med_index, 1]
+    mata: median_any_weight = any_weight[med_index]
+    mata: median_nontrivial_weight = nontrivial_weight[med_index]
     if (`onesided') {
-      mata: median_pos = pos_by_iter[med_index, 1]
+      mata: median_pos = pos_by_iter[med_index]
     }
   }
   else {
     mata: median_b = 0.5*b_by_iter[med_index_1, 1] + 0.5*b_by_iter[med_index_2, 1]
     mata: median_weights = 0.5*average_weights[,med_index_1] + 0.5*average_weights[,med_index_2]
-    mata: median_any_weight = 0.5*any_weight[med_index_1, 1] + 0.5*any_weight[med_index_2, 1]
-    mata: median_nontrivial_weight = 0.5*nontrivial_weight[med_index_1, 1] + 0.5*nontrivial_weight[med_index_2, 1]
+    mata: median_any_weight = 0.5*any_weight[med_index_1] + 0.5*any_weight[med_index_2]
+    mata: median_nontrivial_weight = 0.5*nontrivial_weight[med_index_1] + 0.5*nontrivial_weight[med_index_2]
     if (`onesided') {
-      mata: median_pos = 0.5*pos_by_iter[med_index_1, 1] + 0.5*pos_by_iter[med_index_2, 1]
+      mata: median_pos = 0.5*pos_by_iter[med_index_1] + 0.5*pos_by_iter[med_index_2]
     }
   }
 
@@ -642,9 +655,9 @@ program define optimusindex, eclass
   if (`onesided') {
     mata: mean_pos = mean(pos_by_iter)
   }
-  mata: mean_weights = mean(average_weights)
-  mata: mean_any_weight = mean(any_weight)
-  mata: mean_nontrivial_weight = mean(nontrivial_weight)
+  mata: mean_weights = mean(average_weights')
+  mata: mean_any_weight = mean(any_weight')
+  mata: mean_nontrivial_weight = mean(nontrivial_weight')
 
   // Diplay version of median weights
   mata: weights_rounded = round(median_weights, 0.01)
