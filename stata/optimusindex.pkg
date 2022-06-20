@@ -1,0 +1,17 @@
+v 1.0.0
+d 'optimusindex': A Stata implementation of the opimus index as introduced in Anderson and Magruder (2022) "Highly Powered Analysis Plans."
+d
+d optimusindex implements the optimus index for randomized controlled trials.
+d
+d KW: optimus index
+d KW: randomized controlled trials
+d
+d Requires: Stata version 12
+d
+d Distribution-Date: 20220620
+d
+d Author: Michael Anderson, Grady Killeen, and Jeremy Magruder
+d Support: email gkilleen@berkeley.edu
+
+f optimusindex.ado
+f optimusindex.sthlp
