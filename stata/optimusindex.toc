@@ -1,0 +1,4 @@
+v 1.0.0
+d Optimus index
+d optimusindex A Stata implementation of the opimus index as introduced in Anderson and Magruder (2022) "Highly Powered Analysis Plans."
+p optimusindex A Stata implementation of the opimus index as introduced in Anderson and Magruder (2022) "Highly Powered Analysis Plans."
