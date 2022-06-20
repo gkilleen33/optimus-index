@@ -5,7 +5,7 @@
 program define optimusindex, eclass
   syntax varlist [if] [aweight], treatment(varname) ///
   [cluster(varlist) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
-  folds(integer 10) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) cov_shrinkage(real 0.5) ///
+  folds(integer 5) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) cov_shrinkage(real 0.5) ///
   concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist) strat_nulltreat_fold(integer 1)]
 
   tempfile _torestore
@@ -168,7 +168,7 @@ program define optimusindex, eclass
     capture drop `strata_grp'
     cluster_random_number `treatment_cluster', output_var(`random_clust')
 
-    // Stratify folds on treatment assignment and strata used for randomization GSK: Added stratification on randomization strata. Is this correct?
+    // Stratify folds on treatment assignment and strata used for randomization
     if ("`stratify'" != "") {
       quietly egen `strata_grp' = group(`treatment' `stratify')
     }
@@ -215,7 +215,7 @@ program define optimusindex, eclass
         cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors')
 
       // Get the optimal index
-      capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
+      capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
         min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', ///
         `unweighted', cov_V, `concen_weight' )
 
@@ -462,7 +462,7 @@ program define optimusindex, eclass
           cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors') permuted(1)
 
         // Get the optimal index
-        capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///  GSK: Eliminated ebayes shrinkage of beta
+        capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
           min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', ///
           `unweighted', cov_V, `concen_weight' )
 
@@ -610,7 +610,7 @@ program define optimusindex, eclass
     }
   }
 
-  // Chernozukhov et al. (2018) and Romano and DiCiccio (2019) bound on p-value across multiple fold iterations if no seed specified
+  // Chernozhukov et al. (2018) and Romano and DiCiccio (2019) bound on p-value across multiple fold iterations if no seed specified
   if (`fold_seed' == 0) {
     mata: p = 2*p
     if ("`rw'" != "") {
@@ -1091,10 +1091,9 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 // Maximize the expected t-stat, since power is a monotonic transformation of that.
 void optimus(todo, w, b, V, crit_val, negative, con_wgt, power, g, H)
 {
-	if ( !negative ) {  // GSK: Can we just take the absolute value of the first term to get rid of the negative accounting?
+	if ( !negative ) {
 		power = ( b * w' ) / sqrt( w * V * w' )  -
-			.001 * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )  // GSK: con_wgt is the hyper-parameter on the HHI penalty
-			// GSK: The .001 * sum( ( 2 * w :- 1 ) :^ 200 ) term appears to (loosely) force values to be between 0 and 1.
+			.001 * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )
 		if ( todo >= 1 ) {
 			end_val = length( b )
 			Vw = V * w'
