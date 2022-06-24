@@ -823,6 +823,14 @@ program define gen_coeff_and_covar
 		mata: bname = temp_string_catch[1] // Just take the first outcome if nothing looks good
 		local prescreen_level "`prescreen_level' `outcome1'_sdr" // First outcome (SDR)
 		local screened_group_level "`screened_group_level' `outcome1'" // First outcome (raw)
+
+    mata: included_vars = J(1, `vars_in_group', 0)  // For assigning 0 weights to all excluded variables in recording average weights
+    tokenize "`varlist'"
+    forval i = 1(1)`vars_in_group' {
+      if "``i''" == "`temp_name'" {
+        mata: included_vars[`i'] = 1
+      }
+    }
 	}
 	else {
 		mata: bname = temp_string_full[1..`count_full'] // Final vector of outcome names
