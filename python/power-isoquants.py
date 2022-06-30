@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Plots rejection regions for null of 2 independent N(0,1) variables using Wald, KLK, and Optimus tests 
-Assumes a 2-sided test with 95% confidence 
+Power isoquants for null of 2 independent N(0,1) variables using Wald, KLK, and Optimus tests 
+Assumes a 2-sided test with 95% confidence and 80% power 
 """
 
 import os 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.optimize import minimize 
 from scipy.stats import norm 
 from scipy.spatial import ConvexHull
 import math
@@ -21,15 +20,15 @@ dname = os.path.dirname(abspath)
 os.chdir(dname)
 
 #%%
-# The Wald rejection region is given by (hat beta1^2 + hat beta2^2) > 5.99  
-wald = plt.Circle((0, 0), 2.45, edgecolor='black', fill=False)
+# The Wald isoquant is given by (hat beta1^2 + hat beta2^2) = 9.65  
+wald = plt.Circle((0, 0), 3.106, edgecolor='black', fill=False)
 
 #%%
-# The KLK rejection region is given by |(hat beta1 + hat beta2)/2| > 1.41  
-klk = plt.Rectangle((3, -5.82), 3.98, 15, angle=45, edgecolor='blue', fill=False)
+# The KLK isoquant is given by |(hat beta1 + hat beta2)/2| = 3.96  
+klk = plt.Rectangle((3, -6.96), 5.60029, 15, angle=45, edgecolor='blue', fill=False)
 
 #%% 
-# Now calculate the optimus rejection region, which needs to be done numerically 
+# Now calculate the optimus isoquant, which needs to be done numerically 
 
 # Create an empty numpy array with the beta hat values 
 beta1 = np.arange(-2.82, 2.82, step=0.01)
@@ -41,14 +40,6 @@ beta2 = np.tile(beta2, 564)
 betas = np.empty((564*564, 2))
 betas[:,0] = beta1 
 betas[:,1] = beta2 
-
-# Define a function to calculate optimus weights as a function of beta1, beta2. Returns weight on beta1 
-# First define an objective function to optimize over when both covariates have the same sign 
-# Sign we'll use scipy.optimize.minimize, return negative of the objective for positive t-stats
-def optimus_same_sign_objective(w, beta1, beta2):
-    numerator = w*beta1 + (1-w)*beta2
-    denominator = math.sqrt(w**2 + (1-w)**2)  # This is the standard deviation since we have independent betas with variance 1
-    return -abs(numerator/denominator)
 
 def optimus_weights(betas):
     beta1 = betas[0]
@@ -64,42 +55,46 @@ def optimus_weights(betas):
             w = 1 
         else:
             w = 0
-    else: 
-        res = minimize(optimus_same_sign_objective, 0.5, args=(beta1, beta2), bounds=[(0,1)])
-        w = res.x 
+    else:
+        w = beta1/(beta1 + beta2)  # Closed form solution to weights
     return w
 
 weights = np.apply_along_axis(optimus_weights, 1, betas)
+weights = np.reshape(weights, (len(weights), 1))
 
 # Add the weights to the betas matrix
 betas_w_weights = np.hstack([betas, weights])
 
-# Now determine whether the test would accept or reject for each set of weights, betas 
-def accept_or_reject(row):
+# Now determine whether the power is (approximately) 0.8 for each set of betas 
+def power_80(row):
     beta1 = row[0]
     beta2 = row[1]
     w = row[2]
-    t = (w*beta1 +(1-w)*beta2)/(math.sqrt(w**2 + (1-w)**2)) 
-    p = norm.sf(abs(t))*2
-    if p < 0.05: 
-        return 1 
+    mean = w*beta1 + (1-w)*beta2 
+    variance = w**2 + (1-w)**2  # Since beta1 and beta2 are independent with variance 1
+    sd = math.sqrt(variance)  
+    crit_val = norm.isf(0.025, scale=sd)
+    power = 1 - norm.cdf((crit_val - abs(mean))/sd)
+    if abs(power - 0.8) < .0025:
+        power_80 = 1 
     else: 
-        return 0 
+        power_80 = 0
+    return power_80 
     
-rejections = np.apply_along_axis(accept_or_reject, 1, betas_w_weights)
+indicators = np.apply_along_axis(power_80, 1, betas_w_weights)
 
 # Extract the accepted beta values 
-accepted_betas = betas[rejections == 0]
-hull = ConvexHull(accepted_betas)
-accept_region = np.empty((66, 2))
+isoquat = betas[indicators == 1]
+hull = ConvexHull(isoquat)
+isoquat_region = np.empty((len(hull.vertices), 2))
 i = 0
 for simplex in hull.vertices:
-    accept_region[i, 0] = accepted_betas[simplex, 0] 
-    accept_region[i, 1] = accepted_betas[simplex, 1]
+    isoquat_region[i, 0] = isoquat[simplex, 0] 
+    isoquat_region[i, 1] = isoquat[simplex, 1]
     i += 1
 
 # Plot the optimus accept region 
-optimus = plt.Polygon(accept_region, edgecolor='red', fill=False)
+optimus = plt.Polygon(isoquat_region, edgecolor='red', fill=False)
 
 #%% 
 # Finally generate the actual plots
@@ -117,53 +112,54 @@ fig, ax = plt.subplots()
 ax.add_patch(optimus_1)
 ax.add_patch(wald_1)
 
-plt.axis([-3.5, 3.5, -3.5, 3.5])
+plt.axis([-4, 4, -4, 4])
 ax.set_aspect('equal', adjustable='box')
-plt.xlabel(r'$\hat{\beta}_1$')
-plt.ylabel(r'$\hat{\beta}_2$', rotation=0)
+plt.xlabel(r'$\beta_1$')
+plt.ylabel(r'$\beta_2$', rotation=0)
 ax.spines['left'].set_position('zero')
 ax.spines['right'].set_color('none')
 ax.spines['bottom'].set_position('zero')
 ax.spines['top'].set_color('none')
 ax.xaxis.set_label_coords(0.98, 0.57)
 ax.yaxis.set_label_coords(0.55, 0.97)
-ax.legend(['Optimus accepts', 'Wald accepts'], frameon=False, loc='upper right', prop={'size': 6})
+ax.legend(['Optimus 80\% power', 'Wald 80\% power'], frameon=False, loc='upper right', prop={'size': 6})
 
-plt.savefig('rejection-regions-optimus-wald.png', dpi=300)
+plt.savefig('power-isoquant-optimus-wald.png', dpi=300)
 
 fig, ax = plt.subplots() 
 ax.add_patch(optimus_2)
 ax.add_patch(klk_1)
 
-plt.axis([-3.5, 3.5, -3.5, 3.5])
+plt.axis([-4, 4, -4, 4])
 ax.set_aspect('equal', adjustable='box')
-plt.xlabel(r'$\hat{\beta}_1$')
-plt.ylabel(r'$\hat{\beta}_2$', rotation=0)
+plt.xlabel(r'$\beta_1$')
+plt.ylabel(r'$\beta_2$', rotation=0)
 ax.spines['left'].set_position('zero')
 ax.spines['right'].set_color('none')
 ax.spines['bottom'].set_position('zero')
 ax.spines['top'].set_color('none')
 ax.xaxis.set_label_coords(0.98, 0.57)
 ax.yaxis.set_label_coords(0.55, 0.97)
-ax.legend(['Optimus accepts', 'KLK accepts'], frameon=False, loc='upper right', prop={'size': 6})
+ax.legend(['Optimus 80\% power', 'KLK 80\% power'], frameon=False, loc='upper right', prop={'size': 6})
 
-plt.savefig('rejection-regions-optimus-klk.png', dpi=300)
+plt.savefig('power-isoquant-optimus-klk.png', dpi=300)
+
 
 fig, ax = plt.subplots() 
 ax.add_patch(wald_2)
 ax.add_patch(klk_2)
 
-plt.axis([-3.5, 3.5, -3.5, 3.5])
+plt.axis([-4, 4, -4, 4])
 ax.set_aspect('equal', adjustable='box')
-plt.xlabel(r'$\hat{\beta}_1$')
-plt.ylabel(r'$\hat{\beta}_2$', rotation=0)
+plt.xlabel(r'$\beta_1$')
+plt.ylabel(r'$\beta_2$', rotation=0)
 ax.spines['left'].set_position('zero')
 ax.spines['right'].set_color('none')
 ax.spines['bottom'].set_position('zero')
 ax.spines['top'].set_color('none')
 ax.xaxis.set_label_coords(0.98, 0.57)
 ax.yaxis.set_label_coords(0.55, 0.97)
-ax.legend(['Wald accepts', 'KLK accepts'], frameon=False, loc='upper right', prop={'size': 6})
+ax.legend(['Wald 80\% power', 'KLK 80\% power'], frameon=False, loc='upper right', prop={'size': 6})
 
-plt.savefig('rejection-regions-wald-klk.png', dpi=300)
+plt.savefig('power-isoquant-wald-klk.png', dpi=300)
 
