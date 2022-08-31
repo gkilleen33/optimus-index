@@ -45,7 +45,8 @@ program define optimusindex, eclass
     local treatment_cluster `cluster'
   }
   else {
-    local treatment_cluster `treatment'
+    generate tmp = _n
+    local treatment_cluster tmp
   }
 
   local expected_crit_val = 2  // Used in power calculations, but not important since we're just maximizing power which is a monotonic function of t-stats
