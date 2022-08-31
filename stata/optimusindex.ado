@@ -4,7 +4,7 @@
 
 program define optimusindex, eclass
   syntax varlist [if] [aweight], treatment(varname) ///
-  [cluster(varlist) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
+  [cluster(varlist) id(varname) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
   folds(integer 5) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) cov_shrinkage(real 0.5) ///
   concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist) strat_nulltreat_fold(integer 1)]
 
@@ -43,11 +43,18 @@ program define optimusindex, eclass
 
   if ("`cluster'" != "") {
     local treatment_cluster `cluster'
+    sort `treatment_cluster'
   }
   else {
-    tempvar tmp
-    generate `tmp' = _n
-    local treatment_cluster tmp
+    if "`id'" == "" {
+      dis in red "Option id must be specified if cluster not used"
+      error 111
+    }
+    else {
+      isid `id', missok
+      local treatment_cluster `id'
+      sort `treatment_cluster'
+    }
   }
 
   local expected_crit_val = 2  // Used in power calculations, but not important since we're just maximizing power which is a monotonic function of t-stats

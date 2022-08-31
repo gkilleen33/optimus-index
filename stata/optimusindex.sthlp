@@ -17,6 +17,7 @@ help for {hi:optimusindex}
 {p 8 15 2} {cmd:optimusindex} {it:outcomes} [{it:aweight}]
 [{cmd:if} {it:exp}]{cmd:, {cmd:treatment(}{it:varname}{cmd:)} }
 {bind:[{cmd:cluster(}{it:varlist}{cmd:)}}
+{cmd:stratify(}{it:varname}{cmd:)}
 {cmd:stratify(}{it:varlist}{cmd:)}
 {cmd:covariates(}{it:varlist}{cmd:)}
 {cmd:unweighted(}{it:binary integer}{cmd:)}
@@ -40,6 +41,7 @@ help for {hi:optimusindex}
 {syntab:Primary}
 {synopt: {cmdab:treatment(varname)}} Variable identifying random treatment assignment {p_end}
 {synopt: {cmdab:cluster(varlist)}} Cluster variables used for calculating p-values. {p_end}
+{synopt: {cmdab:id(varname)}} Unique ID for observations. Required if cluster is not specified. {p_end}
 {synopt: {cmdab:stratify(varlist)}} Denotes any variables used to stratify treatment assignment. It is important to
 specify these if they were used in randomization to get accurate p-values. {p_end}
 {synopt: {cmdab:covariates(varlist)}} List of covariates to control for. {p_end}
