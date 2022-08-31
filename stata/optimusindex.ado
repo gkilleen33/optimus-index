@@ -45,7 +45,8 @@ program define optimusindex, eclass
     local treatment_cluster `cluster'
   }
   else {
-    generate tmp = _n
+    tempvar tmp
+    generate `tmp' = _n
     local treatment_cluster tmp
   }
 
