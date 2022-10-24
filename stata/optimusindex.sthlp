@@ -33,6 +33,7 @@ help for {hi:optimusindex}
 {cmd:concen_weight(}{it:real}{cmd:)}
 {cmd:rw(}{it:varlist}{cmd:)}
 {bind:{cmd:strat_nulltreat_fold(}{it:binary integer}{cmd:)}]}
+{bind:{cmd:monotonic_weights(}{it:binary integer}{cmd:)}]}
 
 {marker opt_summary}{...}
 {synoptset 22 tabbed}{...}
@@ -73,6 +74,7 @@ covariance matrix, while 1 applies the full empirical Bayesian shrinkage estimat
 a Romano-Wolf correction for multiple hypothesis testing is calculated across these variables and the optimus index. {p_end}
 {synopt: {cmdab:strat_nulltreat_fold(binary integer)}} Default is 1. If 0, permuted treatment assignments
 are not stratified by fold. It is recommended to keep this option on unless the number of stratification variables is high. {p_end}
+{synopt: {cmdab:monotonic_weights(binary integer)}} Default is 1. If 0, monotonicity will not be enforced for variable weights. {p_end}
 
 {marker description}{...}
 {p} {title:Description}
@@ -256,6 +258,11 @@ for the same set of covariates).
 stratifies the permuted treatment assignment by fold, which mirrors the fact that
 fold assignment is stratified by treatment. This generally produces better results,
 but if a large number of strata are present it may be set to 0.
+
+{phang}
+{opth monotonic_weights(binary integer)} is set to 1 by default. This
+requires weights to have the same sign. If this option is set to 0, weights may 
+have different signs across variables. 
 
 
 {marker results}{...}

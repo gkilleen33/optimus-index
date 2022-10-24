@@ -6,7 +6,7 @@ program define optimusindex, eclass
   syntax varlist [if] [aweight], treatment(varname) ///
   [cluster(varlist) id(varname) stratify(varlist) covariates(varlist) unweighted(integer 0) bootstrap_cov(integer 0) cov_bootstrapreps(integer 10) ///
   folds(integer 5) fold_seed(integer 0) fold_iterations(integer 100) prescreen_cutoff(real 1.2) cov_shrinkage(real 0.5) ///
-  concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist) strat_nulltreat_fold(integer 1)]
+  concen_weight(real 0.5) ri_iterations(integer 500) onesided(integer 1) rw(varlist) strat_nulltreat_fold(integer 1) monotonic_weights(integer 1)]
 
   tempfile _torestore
   quietly save `_torestore'
@@ -226,19 +226,19 @@ program define optimusindex, eclass
       // Get the optimal index
       capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
         min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', ///
-        `unweighted', cov_V, `concen_weight' )
+        `unweighted', cov_V, `concen_weight', `monotonic_weights' )
 
       if ( _rc == 430 ) {
         dis "Mata optimizer failed to find a solution on rep `r'. Trying slightly different covariance shrinkage factor for this rep."
         local temp_cov_shrink = `cov_shrinkage' * 0.9
         capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
           min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `temp_cov_shrink', ///
-          `unweighted', cov_V, `concen_weight' )
+          `unweighted', cov_V, `concen_weight', `monotonic_weights' )
         if ( _rc == 430 ) {
           dis "Mata optimizer failed to find a solution on rep `r'. Reverting to unweighted index for this rep."
           mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
             min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', 1, ///
-            cov_V, `concen_weight' )
+            cov_V, `concen_weight', `monotonic_weights' )
         }
       }
 
@@ -473,19 +473,19 @@ program define optimusindex, eclass
         // Get the optimal index
         capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
           min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', ///
-          `unweighted', cov_V, `concen_weight' )
+          `unweighted', cov_V, `concen_weight', `monotonic_weights' )
 
         if ( _rc == 430 ) {
           dis "Mata optimizer failed to find a solution on rep `r'. Trying slightly different covariance shrinkage factor for this rep."
           local temp_cov_shrink = `cov_shrinkage' * 0.9
           capture mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
             min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `temp_cov_shrink', ///
-            `unweighted', cov_V, `concen_weight' )
+            `unweighted', cov_V, `concen_weight', `monotonic_weights' )
           if ( _rc == 430 ) {
             dis "Mata optimizer failed to find a solution on rep `r'. Reverting to unweighted index for this rep."
             mata: index_output = summary_power_calc( beta, omega, group_selector( select_matrix, ///
               min( ( length( beta ), 10 ) ) ), `expected_crit_val', ( length( beta ) > 10 ), `cov_shrinkage', 1, ///
-              cov_V, `concen_weight' )
+              cov_V, `concen_weight', `monotonic_weights' )
           }
         }
 
@@ -963,7 +963,7 @@ function sort_cov_matrix(real matrix V, real vector beta, real scalar descending
 // For unweighted index, the row vector should be sorted by t-stat. For weighted index, order shouldn't matter.
 // Fast flag assumes the optimal index respects monotonicity of t-stats (in either direction)
 // Function searches for the optimal summary index in the both directions (positive and negative)
-function summary_power_calc( real rowvector beta, real matrix covariance, real matrix select_variables, real scalar crit_val, real scalar fast, real scalar cov_shrinkage_factor, real scalar unweighted, real matrix cov_covariance, real scalar concen_weight )
+function summary_power_calc( real rowvector beta, real matrix covariance, real matrix select_variables, real scalar crit_val, real scalar fast, real scalar cov_shrinkage_factor, real scalar unweighted, real matrix cov_covariance, real scalar concen_weight, real scalar monotonic_weights )
 {
 	//	Standardize everything
 	V = covariance
@@ -1092,6 +1092,7 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 				optimize_init_argument( S, 3, crit_val )
 				optimize_init_argument( S, 4, negative )
 				optimize_init_argument( S, 5, concen_weight )
+        optimize_init_argument( S, 6, monotonic_weights)
 				optimize_init_constraints( S, ( J( 1, length( b ), 1 ), 1 ) ) // Constrain weights to sum to 1
 				optimize_init_conv_maxiter( S, 100 )
 				optimize_init_params( S, J( 1, length( b ), 1 / length( b ) ) + 0.1 * ( b :== max( b ) ) )
@@ -1106,29 +1107,29 @@ function summary_power_calc( real rowvector beta, real matrix covariance, real m
 // Optimus weighted power function, d1 solution (with gradient)
 // Code the [0,1] interval constraint a little loosely using a high-order polynomial
 // Maximize the expected t-stat, since power is a monotonic transformation of that.
-void optimus(todo, w, b, V, crit_val, negative, con_wgt, power, g, H)
+void optimus(todo, w, b, V, crit_val, negative, con_wgt, monotonic, power, g, H)
 {
 	if ( !negative ) {
 		power = ( b * w' ) / sqrt( w * V * w' )  -
-			.001 * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )
+			.001 * monotonic * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )
 		if ( todo >= 1 ) {
 			end_val = length( b )
 			Vw = V * w'
 			for ( i = 1; i <= end_val; i++ ) {
 				g[i] =  ( b[i] / sqrt( w * V * w' ) - b * w' * Vw[i] * ( w * V * w' ) ^ -1.5 ) -
-					0.4 * ( 2 * w[i] - 1 ) ^ 199 - con_wgt * 2 * w[i]
+					0.4 * monotonic * ( 2 * w[i] - 1 ) ^ 199 - con_wgt * 2 * w[i]
 			}
 		}
 	}
 	else {
 		power = -( b * w' ) / sqrt( w * V * w' )  -
-			.001 * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )
+			.001 * monotonic * sum( ( 2 * w :- 1 ) :^ 200 ) - con_wgt * sum( w:^2 )
 		if ( todo >= 1 ) {
 			end_val = length( b )
 			Vw = V * w'
 			for ( i = 1; i <= end_val; i++ ) {
 				g[i] =  -( b[i] / sqrt( w * V * w' ) - b * w' * Vw[i] * ( w * V * w' ) ^ -1.5 ) -
-					0.4 * ( 2 * w[i] - 1 ) ^ 199 - con_wgt * 2 * w[i]
+					0.4 * monotonic * ( 2 * w[i] - 1 ) ^ 199 - con_wgt * 2 * w[i]
 			}
 		}
 	}
