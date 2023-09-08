@@ -47,11 +47,18 @@ program define optimusindex, eclass
   }
   else {
     if "`id'" == "" {
-      dis in red "Option id must be specified if cluster not used"
-      error 111
+      dis in red "ID and cluster not specified. Setting id = _n"
+      generate _id = _n 
+      local treatment_cluster _id
+      sort `treatment_cluster'
     }
     else {
+      preserve
+      if "`if'" != "" {
+        keep `if'
+      } 
       isid `id', missok
+      restore 
       local treatment_cluster `id'
       sort `treatment_cluster'
     }
@@ -466,7 +473,7 @@ program define optimusindex, eclass
   		local fold_disagree = 0
       forvalues f = 1(1)`folds' {
         // Estimate coefficients and covariance matrix for optimus
-        gen_coeff_and_covar	`varlist' `if' & `fold' != `f', treatment_r(`treatment_r_permuted') covariates(`covariates') treatment_cluster(`cluster') ///
+        gen_coeff_and_covar	`varlist' `if' & `fold' != `f', treatment_r(`treatment_r_permuted') covariates(`covariates') treatment_cluster(`treatment_cluster') ///
           rdraw(`rdraw') all_covariates(`all_covariates') fv(`f') prescreen_cutoff(`prescreen_cutoff') bootstrap_cov(`bootstrap_cov') ///
           cov_bootstrapreps(`cov_bootstrapreps') vce(`std_errors') permuted(1)
 
